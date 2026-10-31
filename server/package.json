@@ -1,0 +1,21 @@
+{
+  "name": "server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node index.js",
+    "seed": "node seed.js",
+    "recover-admin": "node recover-admin.js",
+    "test": "node --test --test-reporter=spec \"*.test.js\""
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "multer": "^2.2.0",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^6.9.16"
+  }
+}
