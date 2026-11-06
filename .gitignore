@@ -4,3 +4,9 @@ server/crm.db
 server/crm.db-*
 server/files/
 client/dist/
+client/.env
+client/.env.local
+# Migration artifacts contain real CRM data and a full database snapshot.
+# They are generated on demand (see migration/README.md) and must not be
+# committed.
+migration/export/

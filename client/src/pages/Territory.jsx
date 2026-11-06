@@ -20,11 +20,26 @@ export default function Territory({ leads, refresh }) {
     if (mapRef.current) return;
     const map = L.map(mapEl.current, { zoomControl: true, attributionControl: true })
       .setView([25.68, -80.30], 10);
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
-      subdomains: "abcd",
+
+    // OpenStreetMap, not CARTO. As of 25 Sep 2026 CARTO no longer serves
+    // raster tiles without an API key, and — worse than a clean failure — a
+    // keyless request returns HTTP 200 with a byte-identical "API KEY
+    // REQUIRED" placeholder. Verified on 2026-11-06: four tiles from Miami,
+    // Hialeah, Denver and Seattle all hashed to cc3f31364a735d9a, while the
+    // same four from OSM were distinct real imagery. See
+    // migration/test-harness/tile-probe.mjs.
+    //
+    // The zero-cost constraint rules out a paid basemap key, and OSM's
+    // standard tiles are free and need no credential — which also satisfies
+    // criterion 9's "no exposed private credential" by having none to expose.
+    // The CSS filter restores the dark treatment the design calls for.
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
       maxZoom: 19,
+      className: "gapvera-basemap-dark",
     }).addTo(map);
+
     layerRef.current = L.layerGroup().addTo(map);
     mapRef.current = map;
   }, []);

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, OUTREACH_STATUSES, WEBSITE_STATUSES, PROJECT_STATUSES, daysFromNow } from "../api.js";
+import { api, OUTREACH_STATUSES, WEBSITE_STATUSES, PROJECT_STATUSES, daysFromNow, UNAVAILABLE } from "../api.js";
 import { Modal, Field, ScoreRing } from "./ui.jsx";
 import { openAuditReport } from "../reportExport.js";
 
@@ -12,13 +12,11 @@ export default function LeadModal({ lead, onClose, onSaved }) {
   const [breakdown, setBreakdown] = useState([]);
   const [emails, setEmails] = useState([]);
   const [report, setReport] = useState(null);
-  const [auditing, setAuditing] = useState(false);
-  const [findBusy, setFindBusy] = useState(false);
-  const [candidates, setCandidates] = useState(null);
   const [calls, setCalls] = useState([]);
   const [convert, setConvert] = useState({ project_status: "Discovery", contract_value: "", deliverables: "", due_date: "" });
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
+  const auditInfo = UNAVAILABLE.audit;
 
   useEffect(() => {
     setForm(lead || {});
@@ -53,18 +51,6 @@ export default function LeadModal({ lead, onClose, onSaved }) {
     setForm(updated);
     api.leadCalls(lead.id).then(setCalls);
     onSaved(true); // silent refresh, keep modal open
-  }
-
-  async function doAudit() {
-    setAuditing(true);
-    try {
-      setReport(await api.runAudit(lead.id));
-      onSaved(true); // silent refresh so audit_date persists in the row data
-    } catch (err) {
-      alert("Audit failed: " + err.message);
-    } finally {
-      setAuditing(false);
-    }
   }
 
   async function doConvert() {
@@ -130,33 +116,17 @@ export default function LeadModal({ lead, onClose, onSaved }) {
           <Field label="Owner"><input className="input" value={form.owner_name || ""} onChange={set("owner_name")} /></Field>
           <Field label="Phone"><input className="input" value={form.phone || ""} onChange={set("phone")} /></Field>
           <Field label="Email">
-            <div className="flex gap-1.5">
-              <input className="input" value={form.email || ""} onChange={set("email")} />
-              {form.website_url && (
-                <button type="button" className="btn-ghost !px-2 !py-1 text-xs shrink-0" disabled={findBusy}
-                  onClick={async () => {
-                    setFindBusy(true);
-                    try { setCandidates((await api.findEmail(lead.id)).emails); }
-                    catch { setCandidates([]); }
-                    finally { setFindBusy(false); }
-                  }}>
-                  {findBusy ? "..." : "Find"}
-                </button>
-              )}
-            </div>
-            {candidates && (
-              candidates.length ? (
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {candidates.map((e) => (
-                    <button key={e} type="button" className="btn-ghost !py-0.5 !px-2 text-xs"
-                      onClick={() => { setForm({ ...form, email: e }); setCandidates(null); }}>
-                      {e}
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-xs text-coral mt-1">nothing found on their site</div>
-              )
+            <input className="input" value={form.email || ""} onChange={set("email")} />
+            {/* The "Find" button here needed a server-side fetch of the
+                prospect's site, which a browser cannot do cross-origin. */}
+            {form.website_url && (
+              <div className="text-xs text-dim mt-1">
+                Email lookup is unavailable in this build —{" "}
+                <a className="text-ember hover:underline" href={form.website_url} target="_blank" rel="noreferrer">
+                  check their site
+                </a>{" "}
+                and paste it here.
+              </div>
             )}
           </Field>
           <Field label="Location"><input className="input" value={form.location || ""} onChange={set("location")} /></Field>
@@ -201,16 +171,29 @@ export default function LeadModal({ lead, onClose, onSaved }) {
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div>
               <h3 className="font-semibold text-sm">Website Diagnostics</h3>
-              <p className="text-xs text-dim">{form.website_url ? `Technical scan of ${form.website_url}` : "No website URL on this lead — nothing to scan."}</p>
+              <p className="text-xs text-dim">
+                {report
+                  ? `Scan of ${report.url || form.website_url}`
+                  : "No diagnostics stored for this lead."}
+              </p>
             </div>
-            <div className="flex gap-2">
-              {report && (
-                <button className="btn-ghost" onClick={() => openAuditReport(lead, report)}>⎙ Export Report</button>
-              )}
-              <button className="btn-primary" disabled={busy || auditing || !form.website_url} onClick={doAudit}>
-                {auditing ? "Scanning..." : report ? "Re-run Diagnostics" : "Run Diagnostics"}
-              </button>
-            </div>
+            {report && (
+              <button className="btn-ghost" onClick={() => openAuditReport(lead, report)}>⎙ Export Report</button>
+            )}
+          </div>
+
+          {/* Criterion 11: running a new scan needs a server-side fetch of
+              someone else's domain, which a browser cannot do. Previously
+              stored reports still render below — read access is unaffected. */}
+          <div className="border border-dim/30 rounded-lg px-3 py-2">
+            <div className="micro">{auditInfo.feature} — unavailable</div>
+            <p className="text-xs text-dim mt-1">{auditInfo.reason}</p>
+            <p className="text-xs text-ink/80 mt-1.5">{auditInfo.alternative}</p>
+            {form.website_url && (
+              <a className="btn-ghost text-xs inline-block mt-2" href={form.website_url} target="_blank" rel="noreferrer">
+                ↗ Open {form.website_url.replace(/^https?:\/\/(www\.)?/, "").replace(/[/?#].*$/, "")}
+              </a>
+            )}
           </div>
 
           {report && (

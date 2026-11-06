@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, fillTemplate, daysFromNow, meta, OUTREACH_STATUSES } from "../api.js";
+import { api, fillTemplate, daysFromNow, meta, OUTREACH_STATUSES, UNAVAILABLE } from "../api.js";
 import { Badge, Score, Field, Modal } from "../components/ui.jsx";
 import { openAuditReport } from "../reportExport.js";
 
@@ -45,8 +45,6 @@ export default function Outreach({ leads, refresh }) {
   const [sending, setSending] = useState(false);
   const [msg, setMsg] = useState("");
   const [notes, setNotes] = useState("");
-  const [finding, setFinding] = useState(false);
-  const [foundEmails, setFoundEmails] = useState(null);
   const [pendingOutcome, setPendingOutcome] = useState(null);
   const [callNote, setCallNote] = useState("");
   const [callFollowup, setCallFollowup] = useState(null);
@@ -74,7 +72,6 @@ export default function Outreach({ leads, refresh }) {
     if (!selected) return;
     setNotes(selected.notes || "");
     setMsg("");
-    setFoundEmails(null);
     api.emailLogs(selected.id).then(setLeadLogs).catch(() => setLeadLogs([]));
     api.leadCalls(selected.id).then(setCallEvents).catch(() => setCallEvents([]));
     setPendingOutcome(null);
@@ -108,17 +105,22 @@ export default function Outreach({ leads, refresh }) {
     setCompose({ template_id: id, subject: t?.subject || "", body: t?.body || "" });
   }
 
-  async function send() {
+  // Saves the composed message as a draft. It does not send — there is no mail
+  // provider in this build — and it deliberately leaves outreach_status and
+  // last_contact_date alone, because nothing has reached the prospect yet.
+  // Advancing the sequence here would silently burn a follow-up step on mail
+  // that was never delivered (acceptance 11).
+  async function saveDraft() {
     setSending(true);
     setMsg("");
     try {
-      const res = await api.sendEmail({
+      await api.saveDraft({
         lead_id: selected.id,
         template_id: Number(compose.template_id) || null,
         subject: compose.subject,
         body: compose.body,
       });
-      setMsg(res.status === "sent" ? "Sent." : res.status === "mock" ? "Logged (mock mode)." : res.status);
+      setMsg("Draft saved. Copy it into your email client to send.");
       api.emailLogs(selected.id).then(setLeadLogs);
       refresh();
     } catch (err) {
@@ -128,24 +130,22 @@ export default function Outreach({ leads, refresh }) {
     }
   }
 
-  async function findEmail() {
-    setFinding(true);
-    setFoundEmails(null);
+  // The manual send path: put the filled-in message on the clipboard so it can
+  // go straight into a real mail client. Falls back to a visible message rather
+  // than failing silently, because clipboard access is permission-gated.
+  async function copyMessage() {
+    const text = `To: ${selected.email}\nSubject: ${fillTemplate(compose.subject, selected)}\n\n${fillTemplate(compose.body, selected)}`;
     try {
-      const res = await api.findEmail(selected.id);
-      setFoundEmails(res.emails);
-    } catch (err) {
-      setMsg("Email search failed: " + err.message);
-    } finally {
-      setFinding(false);
+      await navigator.clipboard.writeText(text);
+      setMsg("Copied — paste it into your email client.");
+    } catch {
+      setMsg("Could not access the clipboard. Select the preview text above and copy it manually.");
     }
   }
 
-  async function useEmail(email) {
-    await api.updateLead(selected.id, { email });
-    setFoundEmails(null);
-    refresh();
-  }
+  // Email discovery required a server to fetch the prospect's site; a browser
+  // cannot do that cross-origin. The button is gone and this explains why.
+  const findEmailInfo = UNAVAILABLE.findEmail;
 
   async function commitCall() {
     await api.logCall(selected.id, pendingOutcome, callNote.trim(), callFollowup);
@@ -330,7 +330,12 @@ export default function Outreach({ leads, refresh }) {
 
               {/* Email */}
               <div className="glass p-4 space-y-3 lg:overflow-y-auto lg:min-h-0">
-                <h3 className="font-semibold text-sm">Email</h3>
+                <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                  <h3 className="font-semibold text-sm">Email</h3>
+                  {/* Criterion 11: the limitation is stated where the work
+                      happens, not buried in a settings page. */}
+                  <span className="micro text-dim">drafts only — sending is unavailable</span>
+                </div>
                 {selected.email ? (
                   <>
                     <div className="text-xs text-dim">to <span className="text-ink">{selected.email}</span></div>
@@ -347,15 +352,28 @@ export default function Outreach({ leads, refresh }) {
                         <pre className="whitespace-pre-wrap font-sans text-xs text-ink/70 mt-1">{fillTemplate(compose.body, selected)}</pre>
                       </div>
                     )}
-                    <div className="flex items-center gap-2">
-                      <button className="btn-primary" disabled={sending || !compose.subject} onClick={send}>{sending ? "Sending..." : "Send"}</button>
-                      {msg && <span className="text-xs text-emberhi">{msg}</span>}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button className="btn-primary" disabled={sending || !compose.subject} onClick={saveDraft}>
+                        {sending ? "Saving…" : "Save draft"}
+                      </button>
+                      <button className="btn-ghost text-xs" disabled={!compose.subject && !compose.body} onClick={copyMessage}>
+                        Copy for sending
+                      </button>
                     </div>
+                    {msg && <span className="text-xs text-emberhi block">{msg}</span>}
+                    <p className="micro leading-relaxed">
+                      GapVera cannot send mail in this build. Save the draft to keep it with the
+                      lead, then copy it into your own email client. Mark the lead Contacted
+                      yourself once it has actually gone out.
+                    </p>
                     {leadLogs.length > 0 && (
                       <div className="text-xs text-dim space-y-1 pt-1 border-t border-ink/10">
-                        <div className="micro">sent to this lead</div>
+                        <div className="micro">drafts for this lead</div>
                         {leadLogs.slice(0, 4).map((log) => (
-                          <div key={log.id} className="truncate">{log.sent_at?.slice(0, 16)} — {log.subject} <span className={log.status === "sent" ? "text-mint" : "text-emberhi"}>({log.status})</span></div>
+                          <div key={log.id} className="truncate">
+                            {log.sent_at?.slice(0, 16)} — {log.subject}{" "}
+                            <span className="text-dim">({log.status})</span>
+                          </div>
                         ))}
                       </div>
                     )}
@@ -363,24 +381,18 @@ export default function Outreach({ leads, refresh }) {
                 ) : (
                   <div className="space-y-2">
                     <p className="text-sm text-dim">No email on file — Google doesn't publish them.</p>
-                    {selected.website_url ? (
-                      <button className="btn-primary" disabled={finding} onClick={findEmail}>
-                        {finding ? "Searching their site..." : "Find Email on Their Site"}
-                      </button>
-                    ) : (
-                      <p className="text-xs text-dim">No website to search either — this one's a phone lead. Add an email on the Details modal if you find one.</p>
-                    )}
-                    {foundEmails && (
-                      foundEmails.length ? (
-                        <div className="space-y-1">
-                          <div className="micro">found — click to save</div>
-                          {foundEmails.map((e) => (
-                            <button key={e} className="btn-ghost text-xs block w-full text-left" onClick={() => useEmail(e)}>✉ {e}</button>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="text-xs text-coral">Nothing found on their homepage or contact page.</p>
-                      )
+                    {/* The old "Find Email on Their Site" button needed a
+                        server-side fetch. Rather than a button that always
+                        fails, state the limitation and the manual path. */}
+                    <div className="border border-dim/30 rounded-lg px-3 py-2">
+                      <div className="micro">{findEmailInfo.feature} — unavailable</div>
+                      <p className="text-xs text-dim mt-1">{findEmailInfo.reason}</p>
+                      <p className="text-xs text-ink/80 mt-1.5">{findEmailInfo.alternative}</p>
+                    </div>
+                    {selected.website_url && (
+                      <a className="btn-ghost text-xs inline-block" href={selected.website_url} target="_blank" rel="noreferrer">
+                        ↗ Open their site
+                      </a>
                     )}
                     {msg && <span className="text-xs text-coral">{msg}</span>}
                   </div>

@@ -1,13 +1,16 @@
-// Authentication screens: first-run setup, login, and the signed-out notice.
-// Copy and structure follow the approved mockup (handoff/mockup/auth-flow.html);
-// styling uses the app's existing tokens (glass panels, micro labels, ember
-// buttons) rather than new ones.
+// Authentication screens. Copy and structure follow the approved mockup
+// (handoff/mockup/auth-flow.html); styling uses the app's existing tokens.
 //
-// Unlike the mockup these are real password inputs. They are masked by default
-// with a labeled reveal control, accept paste, and never echo a value anywhere
-// but the field itself.
+// Changed for the hosted build: authentication is Supabase Auth, not a local
+// admin password. There is no first-run setup screen any more — the account is
+// created in the Supabase dashboard and public signup is disabled, so this app
+// offers no way to create one (acceptance 3). The login form therefore takes
+// an email address rather than a fixed "admin" username.
+//
+// These are real password inputs: masked by default with a labeled reveal
+// control, they accept paste and never echo a value anywhere but the field.
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { auth } from "../api.js";
 
 function BrandMark() {
@@ -99,105 +102,24 @@ const submitClass =
   "transition-colors disabled:opacity-50 disabled:cursor-not-allowed " +
   "focus:outline-none focus:ring-2 focus:ring-ember/50";
 
-/** First-run: create the single local administrator. */
-export function SetupScreen({ policy, onReady }) {
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
+const inputClass =
+  "w-full bg-void/50 border border-ink/15 rounded-lg px-3 py-2 text-ink " +
+  "focus:outline-none focus:border-ember/60 focus:ring-1 focus:ring-ember/40";
 
-  const length = [...password].length;
-  const lengthOk = length >= policy.min && length <= policy.max;
-  const matches = password.length > 0 && password === confirm;
-
-  async function submit(e) {
-    e.preventDefault();
-    setError("");
-    if (!lengthOk) return setError(`Password must be ${policy.min}–${policy.max} characters.`);
-    if (!matches) return setError("Passwords do not match.");
-    setBusy(true);
-    try {
-      await auth.setup(password, confirm);
-      // Clear the chosen value from component state before handing off; the
-      // operator signs in with it, which also proves the hash verifies.
-      setPassword("");
-      setConfirm("");
-      onReady();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Shell
-      step="01 / Initialize access"
-      title="Make this workspace yours."
-      lede="One local administrator protects everything in GapVera. Choose a password you can store in your password manager — there is no email reset."
-    >
-      <form onSubmit={submit} noValidate>
-        <div className="mt-5">
-          <div className="micro mb-1.5">Administrator</div>
-          <div className="bg-void/50 border border-ink/15 rounded-lg px-3 py-2 text-ink/80">admin</div>
-        </div>
-        <PasswordField
-          id="new-password"
-          label="Create password"
-          value={password}
-          onChange={setPassword}
-          autoComplete="new-password"
-          autoFocus
-          describedBy="password-rule"
-        />
-        <div id="password-rule" className="micro mt-1.5">
-          {policy.min}–{policy.max} characters. Spaces are allowed.
-          {password && (
-            <span className={lengthOk ? " text-mint" : " text-dim"}>
-              {" "}
-              · {length} so far
-            </span>
-          )}
-        </div>
-        <PasswordField
-          id="confirm-password"
-          label="Confirm password"
-          value={confirm}
-          onChange={setConfirm}
-          autoComplete="new-password"
-        />
-        <Notice>{error}</Notice>
-        <button type="submit" className={submitClass} disabled={busy}>
-          {busy ? "Creating…" : "Create administrator"}
-        </button>
-      </form>
-    </Shell>
-  );
-}
-
-/** Sign in. `reason` explains why the login screen is showing. */
+/** Sign in with Supabase Auth. `reason` explains why the screen is showing. */
 export function LoginScreen({ reason, onAuthenticated }) {
+  const [email, setEmail] = useState(() => localStorage.getItem("gapvera.last_email") || "");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [cooldown, setCooldown] = useState(0);
-  const timer = useRef(null);
-
-  // Mirror the server's cooldown so the button is visibly unavailable. This is
-  // display only — the server enforces it regardless of what the UI shows.
-  useEffect(() => {
-    if (cooldown <= 0) return undefined;
-    timer.current = setTimeout(() => setCooldown((s) => s - 1), 1000);
-    return () => clearTimeout(timer.current);
-  }, [cooldown]);
 
   const lede =
     reason === "expired"
       ? "Your session expired. Let's sign you back in."
       : reason === "logged-out"
       ? "You're signed out of this workspace."
-      : reason === "denied"
-      ? "Administrator access is required for that page."
+      : reason === "forbidden"
+      ? "That account is not authorized for GapVera."
       : "Sign in to GapVera.";
 
   async function submit(e) {
@@ -205,11 +127,13 @@ export function LoginScreen({ reason, onAuthenticated }) {
     setError("");
     setBusy(true);
     try {
-      await auth.login("admin", password);
+      await auth.login(email.trim(), password);
+      // Remember the address only — never the password. It saves retyping on a
+      // phone without storing anything sensitive.
+      localStorage.setItem("gapvera.last_email", email.trim());
       setPassword("");
       onAuthenticated();
     } catch (err) {
-      if (err.retryAfterSeconds) setCooldown(err.retryAfterSeconds);
       setError(err.message);
       setPassword("");
     } finally {
@@ -221,8 +145,19 @@ export function LoginScreen({ reason, onAuthenticated }) {
     <Shell step="02 / Welcome back" title="Sign in to GapVera." lede={lede}>
       <form onSubmit={submit} noValidate>
         <div className="mt-5">
-          <div className="micro mb-1.5">Administrator</div>
-          <div className="bg-void/50 border border-ink/15 rounded-lg px-3 py-2 text-ink/80">admin</div>
+          <label htmlFor="email" className="micro block mb-1.5">
+            Email
+          </label>
+          <input
+            id="email"
+            type="email"
+            inputMode="email"
+            autoComplete="username"
+            autoFocus={!email}
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className={inputClass}
+          />
         </div>
         <PasswordField
           id="password"
@@ -230,23 +165,16 @@ export function LoginScreen({ reason, onAuthenticated }) {
           value={password}
           onChange={setPassword}
           autoComplete="current-password"
-          autoFocus
+          autoFocus={Boolean(email)}
         />
-        <Notice>
-          {error}
-          {cooldown > 0 && (
-            <div className="mt-1 text-xs opacity-80">
-              Try again in {Math.floor(cooldown / 60)}:{String(cooldown % 60).padStart(2, "0")}.
-            </div>
-          )}
-        </Notice>
-        <button type="submit" className={submitClass} disabled={busy || cooldown > 0}>
+        <Notice>{error}</Notice>
+        <button type="submit" className={submitClass} disabled={busy || !email.trim() || !password}>
           {busy ? "Signing in…" : "Sign in"}
         </button>
       </form>
       <p className="micro mt-5 leading-relaxed">
-        Lost your password? Recovery is a local, offline procedure — see docs/AUTH.md. There is no
-        email reset and no default password.
+        Accounts are created by the administrator in Supabase. Public signup is disabled, so there is
+        no register form and no self-service password reset.
       </p>
     </Shell>
   );
@@ -255,7 +183,7 @@ export function LoginScreen({ reason, onAuthenticated }) {
 /** Post-logout confirmation (mockup state 04). */
 export function SignedOutScreen({ onBackToLogin }) {
   return (
-    <Shell step="04 / Session ended" title="You're logged out." lede="Your session was ended on the server.">
+    <Shell step="04 / Session ended" title="You're logged out." lede="Your session token was discarded.">
       <button type="button" className={submitClass} onClick={onBackToLogin}>
         Back to sign in
       </button>
@@ -263,16 +191,65 @@ export function SignedOutScreen({ onBackToLogin }) {
   );
 }
 
-/** Auth store unreachable — fail closed, visibly (never a login form that can't work). */
+/** Auth backend unreachable — fail closed, visibly (never a form that can't work). */
 export function AuthUnavailableScreen({ onRetry }) {
   return (
     <Shell
       step="Access unavailable"
       title="Authentication is unavailable."
-      lede="GapVera cannot verify access right now, so the workspace stays locked. Your records are untouched. Check the server log, then try again."
+      lede="GapVera cannot reach Supabase to verify access, so the workspace stays locked. Your records are untouched. Check your connection, then try again."
     >
       <button type="button" className={submitClass} onClick={onRetry}>
         Try again
+      </button>
+    </Shell>
+  );
+}
+
+/**
+ * The build has no Supabase URL/key. This is a deployment fault, not a login
+ * problem, and showing a sign-in form here would produce a confusing failure
+ * on every attempt — so it gets its own screen that names the missing config.
+ */
+export function NotConfiguredScreen() {
+  return (
+    <Shell
+      step="Configuration missing"
+      title="This build is not connected to a backend."
+      lede="GapVera was built without its Supabase credentials, so there is nothing to sign in to."
+    >
+      <div className="mt-5 text-sm text-dim space-y-2">
+        <p>Set both of these as environment variables in the hosting project, then redeploy:</p>
+        <pre className="bg-void/50 border border-ink/15 rounded-lg p-3 text-xs overflow-x-auto">
+          VITE_SUPABASE_URL{"\n"}VITE_SUPABASE_ANON_KEY
+        </pre>
+        <p>
+          These are build-time values: Vite inlines them when the bundle is compiled, so changing
+          them requires a new deployment, not just a page reload.
+        </p>
+      </div>
+    </Shell>
+  );
+}
+
+/**
+ * Signed in, but the account is not the owner. Credentials were correct and
+ * authorization is missing — a distinct state from a bad password, and worth
+ * saying plainly so nobody retypes a working password repeatedly.
+ */
+export function NotAuthorizedScreen({ onSignOut }) {
+  return (
+    <Shell
+      step="03 / Not authorized"
+      title="This account can't open GapVera."
+      lede="Your sign-in worked, but this user is not registered as the workspace owner, so every record stays hidden."
+    >
+      <p className="micro mt-4 leading-relaxed">
+        The owner is granted explicitly in the database. Until then, GapVera correctly shows nothing
+        rather than partial data.
+      </p>
+      <button type="button" className={submitClass} onClick={onSignOut}>
+        Sign out
       </button>
     </Shell>
   );

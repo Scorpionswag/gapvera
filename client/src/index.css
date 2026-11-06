@@ -120,6 +120,17 @@ input[type="checkbox"] {
   background: #143059;
 }
 
+/* OpenStreetMap ships light tiles; the Territory design is dark. CARTO's
+   dark_all raster layer used to provide this, but it now requires a paid key
+   (see Territory.jsx). Inverting and re-hueing the standard OSM tiles gets the
+   dark treatment back at no cost and with no credential.
+
+   Applied to the tile layer only, via its className — markers, popups and the
+   attribution control are siblings in the DOM and keep their real colors. */
+.gapvera-basemap-dark {
+  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.88) saturate(0.7);
+}
+
 .gv-dot {
   border-radius: 9999px;
   box-shadow: 0 0 10px 2px var(--dot-glow, rgba(194, 75, 46, 0.65));

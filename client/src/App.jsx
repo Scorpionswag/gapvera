@@ -1,7 +1,13 @@
 import { useEffect, useState, useCallback } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
-import { api, auth, AUTH_LOST_EVENT } from "./api.js";
-import { SetupScreen, LoginScreen, SignedOutScreen, AuthUnavailableScreen } from "./pages/Auth.jsx";
+import { api, auth, AUTH_LOST_EVENT, isConfigured } from "./api.js";
+import {
+  LoginScreen,
+  SignedOutScreen,
+  AuthUnavailableScreen,
+  NotConfiguredScreen,
+  NotAuthorizedScreen,
+} from "./pages/Auth.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import Leads from "./pages/Leads.jsx";
 import Territory from "./pages/Territory.jsx";
@@ -48,31 +54,35 @@ function BrandMark() {
   );
 }
 
-// The gate is a state machine over the server's auth status, and it wraps the
-// whole workspace. Business data is fetched by Workspace, which does not exist
-// as a component until the server has confirmed a live session — so "no data
-// before login" is structural, not a matter of hiding rendered values.
+// The gate is a state machine over Supabase's view of the session, and it
+// wraps the whole workspace. Business data is fetched by Workspace, which does
+// not exist as a component until Supabase has confirmed a live session for an
+// account registered as the owner — so "no data before login" is structural,
+// not a matter of hiding rendered values.
 const PHASE = {
   CHECKING: "checking",
-  SETUP: "setup",
   LOGIN: "login",
   SIGNED_OUT: "signed-out",
   READY: "ready",
   UNAVAILABLE: "unavailable",
+  NOT_CONFIGURED: "not-configured",
+  NOT_AUTHORIZED: "not-authorized",
 };
 
 export default function App() {
   const [phase, setPhase] = useState(PHASE.CHECKING);
-  const [policy, setPolicy] = useState({ min: 15, max: 128 });
   const [loginReason, setLoginReason] = useState(null);
 
   const checkStatus = useCallback(async () => {
+    // A build with no credentials can never authenticate. Say that instead of
+    // showing a login form that is guaranteed to fail.
+    if (!isConfigured) return setPhase(PHASE.NOT_CONFIGURED);
     setPhase(PHASE.CHECKING);
     try {
       const status = await auth.status();
-      if (status.passwordPolicy) setPolicy(status.passwordPolicy);
-      if (status.setupRequired) return setPhase(PHASE.SETUP);
-      return setPhase(status.authenticated ? PHASE.READY : PHASE.LOGIN);
+      if (status.authenticated) return setPhase(PHASE.READY);
+      if (status.authenticatedNotOwner) return setPhase(PHASE.NOT_AUTHORIZED);
+      return setPhase(PHASE.LOGIN);
     } catch {
       // Cannot establish whether access is allowed, so assume it is not.
       return setPhase(PHASE.UNAVAILABLE);
@@ -83,22 +93,21 @@ export default function App() {
     checkStatus();
   }, [checkStatus]);
 
-  // Any 401 from anywhere in the app tears the workspace down immediately —
+  // Any 401/403 from anywhere in the app tears the workspace down immediately —
   // including a session that expired in another tab or was logged out there.
   useEffect(() => {
     const onAuthLost = (event) => {
-      setLoginReason(event.detail?.reason === "expired" ? "expired" : null);
+      const reason = event.detail?.reason;
+      setLoginReason(reason === "expired" || reason === "forbidden" ? reason : null);
       setPhase(PHASE.LOGIN);
     };
     window.addEventListener(AUTH_LOST_EVENT, onAuthLost);
     return () => window.removeEventListener(AUTH_LOST_EVENT, onAuthLost);
   }, []);
 
-  const handleLoggedOut = useCallback((ok) => {
-    // A failed logout must not claim success. The workspace is hidden either
-    // way, but the operator is told the server session may still be live.
-    setLoginReason(ok ? "logged-out" : null);
-    setPhase(ok ? PHASE.SIGNED_OUT : PHASE.LOGIN);
+  const handleLoggedOut = useCallback(() => {
+    setLoginReason("logged-out");
+    setPhase(PHASE.SIGNED_OUT);
   }, []);
 
   switch (phase) {
@@ -108,10 +117,20 @@ export default function App() {
           <div className="micro">Checking access…</div>
         </div>
       );
+    case PHASE.NOT_CONFIGURED:
+      return <NotConfiguredScreen />;
     case PHASE.UNAVAILABLE:
       return <AuthUnavailableScreen onRetry={checkStatus} />;
-    case PHASE.SETUP:
-      return <SetupScreen policy={policy} onReady={() => setPhase(PHASE.LOGIN)} />;
+    case PHASE.NOT_AUTHORIZED:
+      return (
+        <NotAuthorizedScreen
+          onSignOut={async () => {
+            await auth.logout();
+            setLoginReason(null);
+            setPhase(PHASE.LOGIN);
+          }}
+        />
+      );
     case PHASE.SIGNED_OUT:
       return <SignedOutScreen onBackToLogin={() => setPhase(PHASE.LOGIN)} />;
     case PHASE.LOGIN:
@@ -151,16 +170,19 @@ function Workspace({ onLoggedOut }) {
     setLoggingOut(true);
     setLogoutError("");
     try {
+      // Drop protected state before the view changes, so no leads survive in
+      // memory into the signed-out render.
       await auth.logout();
-      setLeads([]); // drop protected state before the view changes
+      setLeads([]);
       setConfig({});
-      onLoggedOut(true);
+      onLoggedOut();
     } catch (err) {
-      // Hide the protected UI without claiming the server session is gone.
+      // auth.logout() discards the local token even if the network call fails,
+      // so the session really is gone client-side; surface the detail anyway.
       setLeads([]);
       setConfig({});
       setLogoutError(err.message);
-      onLoggedOut(false);
+      onLoggedOut();
     } finally {
       setLoggingOut(false);
     }
@@ -200,12 +222,14 @@ function Workspace({ onLoggedOut }) {
         <div className="space-y-1.5 pt-6">
           <div className="h-px bg-gradient-to-r from-ember/30 to-transparent mb-3" />
           {/* Mockup state 03: the access label and logout live together. This
-              badge is a convenience label only — the server decides access. */}
+              badge is a convenience label only — Postgres RLS decides access. */}
           <div className="flex items-center justify-between gap-2">
-            <span className="micro">admin · admin only</span>
+            <span className="micro truncate" title={auth.user()?.email || ""}>
+              {auth.user()?.email || "signed in"}
+            </span>
             <button
               type="button"
-              className="btn-ghost text-xs px-2 py-1"
+              className="btn-ghost text-xs px-2 py-1 shrink-0"
               onClick={logout}
               disabled={loggingOut}
             >
@@ -217,10 +241,12 @@ function Workspace({ onLoggedOut }) {
               {logoutError}
             </div>
           )}
-          <div className="micro">build 0.1.0</div>
-          <div className="micro">email — {config.smtpConfigured ? "live" : "mock"}</div>
-          <div className="micro">maps — {config.mapsConfigured ? "live" : "mock"}</div>
-          <div className="micro">auto-send — {config.autoFollowups ? "on" : "off (you approve)"}</div>
+          <div className="micro">build 0.1.0 · hosted</div>
+          {/* These say "unavailable", not "mock": nothing is pretending to
+              work in the background. See acceptance criterion 11. */}
+          <div className="micro">email sending — unavailable</div>
+          <div className="micro">lead scraping — unavailable</div>
+          <div className="micro">auto-send — off</div>
         </div>
       </aside>
 

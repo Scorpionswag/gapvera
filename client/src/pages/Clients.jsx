@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, PROJECT_STATUSES } from "../api.js";
 import { Badge, Modal, Field, StatCard } from "../components/ui.jsx";
+import { DocLink } from "../components/DocLink.jsx";
 import InvoicePanel from "../components/InvoicePanel.jsx";
 
 const fmtSize = (n) =>
@@ -116,12 +117,14 @@ export default function Clients() {
               </div>
               {docs.map((d) => (
                 <div key={d.id} className="flex items-center justify-between gap-2 bg-ink/5 rounded-lg px-3 py-1.5 text-sm">
-                  <a className="truncate text-ember hover:underline" href={api.docUrl(d.id)} target="_blank" rel="noreferrer" title={d.filename}>
+                  <DocLink doc={d} className="truncate text-ember hover:underline">
                     {d.filename}
-                  </a>
+                  </DocLink>
                   <span className="flex items-center gap-2 shrink-0 text-xs text-dim">
                     {fmtSize(d.size)} · {d.uploaded_at?.slice(0, 10)}
-                    <a className="btn-ghost !py-0.5 !px-2" href={api.docUrl(d.id, true)}>↓</a>
+                    <DocLink doc={d} download className="btn-ghost !py-0.5 !px-2" title="Download">
+                      ↓
+                    </DocLink>
                     <button className="text-coral opacity-50 hover:opacity-100" title="Delete file"
                       onClick={async () => {
                         if (!confirm(`Delete "${d.filename}"?`)) return;

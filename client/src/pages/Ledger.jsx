@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, PROJECT_STATUSES, daysFromNow } from "../api.js";
 import { Badge, StatCard } from "../components/ui.jsx";
+import { DocLink } from "../components/DocLink.jsx";
 
 // Ledger: the client-side twin of the Dashboard. 01 watches the leads coming
 // in; this page watches the work and money going out — projects, deadlines,
@@ -139,9 +140,9 @@ export default function Ledger() {
           <div className="space-y-1">
             {docs.map((d) => (
               <div key={d.id} className="flex items-center justify-between gap-3 bg-ink/5 rounded-lg px-3 py-1.5 text-sm">
-                <a className="text-ember hover:underline truncate" href={api.docUrl(d.id)} target="_blank" rel="noreferrer" title={d.filename}>
+                <DocLink doc={d} className="text-ember hover:underline truncate">
                   {d.filename}
-                </a>
+                </DocLink>
                 <span className="text-xs text-dim shrink-0">{d.business_name || "(deleted client)"} · {d.uploaded_at?.slice(0, 10)}</span>
               </div>
             ))}
