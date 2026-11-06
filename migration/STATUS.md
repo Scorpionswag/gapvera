@@ -1,36 +1,92 @@
 # GapVera zero-cost migration — status
 
-Task `t_9c4aa30f`. Assessed against `handoff/zero-cost/acceptance.md`.
+Task `t_961bc97c` (final deployment pass; supersedes `t_9c4aa30f`).
+Assessed against `handoff/zero-cost/acceptance.md`.
 
 Status vocabulary is deliberate (acceptance criterion 14). **Implemented** means
 code exists. **Tests passing** means automated tests cover it and pass.
 **Locally verified** means it was executed against a real Postgres and a real
 browser on this machine. **Provider-configured**, **deployed**, and
-**live-verified** mean exactly what they say — and none of those three are
-claimed anywhere below.
+**live-verified** mean exactly what they say.
 
-## Blocker
+## Current state (2026-11-06): pushed and deployed, one user-only gate left
 
-**No Supabase or Cloudflare account exists, and no credential for either is
-available to this session.** Verified, not assumed:
+Resolved this pass:
 
-- Hermes credential vault: no Supabase or Cloudflare item.
-- No `supabase` or `wrangler` CLI installed.
-- `~/.supabase`, `~/.wrangler`, `~/.cloudflared`: absent or empty.
-- No `SUPABASE_*` / `CLOUDFLARE_*` / `CF_*` variables in the environment.
-- No `.env` files anywhere in the repo.
+- **GitHub write access.** The pending collaborator invitation (id
+  342008324, `permissions: write`) was accepted by the authenticated user
+  `scorpioswaggs`; `repos/Scorpionswag/gapvera` now reports `push: true`,
+  where it previously reported READ.
+- **Push.** Commit `ef3acf3` is on `Scorpionswag/gapvera@main` — 75 blobs,
+  confirmed by API readback. No `.env`, no `crm.db`, and no
+  `migration/export/` reached the remote.
+- **Cloudflare Pages deployment.** The push auto-triggered the existing Pages
+  project `gapvera`. The GitHub check run "Cloudflare Pages" (app:
+  *Cloudflare Workers and Pages*) completed `success` at
+  2026-11-06T21:59:13Z — deployment
+  `e6bb72bc-c30a-4ea2-bc8e-b62641a1d551`, account
+  `731d919f8e647c79f9a3a6bfc5dbf15d`.
+- **Live URL: https://gapvera.pages.dev** — HTTP 200, served by Cloudflare
+  (`cf-ray` present), independent of Erik's computer.
+- **Shipped-bundle identity confirmed.** `/assets/index-DqmqpBo1.js` fetched
+  from the live origin is **437289 bytes, sha256
+  `ffd3c9b206cf7e031c68ca328d49e3c45fec979b55273d590c7e9653fc4a6ff7`** —
+  byte-identical to the locally built artifact. What was tested is what is
+  live.
+- **Live bundle secret scan** (against the deployed file, not a local copy):
+  no JWT, no `service_role`, no `localhost`, no `127.0.0.1`, no LAN address,
+  no `<ref>.supabase.co`, no stale `/api/` path.
+- **SPA deep links work.** `/territory` returns 200 and serves the index
+  shell, so `client/public/_redirects` is in effect.
 
-The Supabase project ref named in earlier notes (`iwmdfapdzyqfzhdgzdpa`) does
-resolve — `/rest/v1/` and `/auth/v1/health` both return HTTP 401 `No API key
-found`, which proves the project exists but that this session holds no key for
-it.
+## Remaining blocker (user-only)
 
-GitHub push is separately blocked: `gh` is authenticated as `scorpioswaggs`,
-but `Scorpionswag/gapvera` reports `viewerPermission: READ` and a
-`git push --dry-run` to a throwaway ref was rejected with 403.
+**`VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are not set in the
+Cloudflare Pages project, so the deployed build fails closed.**
 
-Everything from "create the project" onward is therefore blocked. Creating
-these accounts requires email verification and CAPTCHA, which is a human step.
+The live site renders the product's own CONFIGURATION MISSING card — *"This
+build is not connected to a backend."* That is the designed fail-closed
+behaviour the spec requires, not a crash and not a fake success. But it means
+no auth, CRM, document, or map surface can be exercised on the hosted
+product, so criteria 3–6, 8–10 and 12 cannot be closed as live-verified.
+
+These are **build-time** values: Vite inlines them at compile time, so setting
+them requires a new deployment, not a reload.
+
+Why this session could not set them — verified, not assumed:
+
+- Hermes credential vault: empty (no Cloudflare, no Supabase item).
+- No `wrangler`/`supabase` CLI; `~/.wrangler`, `~/.config/wrangler`,
+  `~/.supabase`, `~/.config/supabase`, `~/.netrc`: all absent.
+- No `CLOUDFLARE_*`, `CF_*`, `SUPABASE_*`, or `VITE_*` variables in the
+  environment.
+- `dash.cloudflare.com` serves a Turnstile "Verify you are human" challenge
+  to this browser session and does not clear it; past it, the dashboard still
+  needs Erik's Cloudflare login, which is his alone to supply.
+
+The Supabase project is reachable and correctly refuses anonymous callers:
+`iwmdfapdzyqfzhdgzdpa.supabase.co/rest/v1/` and `/auth/v1/health` both return
+HTTP 401 `No API key found`. The project exists; this session holds no key.
+
+### What Erik needs to do (two dashboard steps, both free)
+
+1. Cloudflare → Pages → `gapvera` → Settings → Environment variables. Add
+   `VITE_SUPABASE_URL` (`https://iwmdfapdzyqfzhdgzdpa.supabase.co`) and
+   `VITE_SUPABASE_ANON_KEY` (Supabase → Settings → API → `anon`/publishable
+   key) for Production *and* Preview. Confirm build command `npm run build`,
+   output directory `client/dist`. Then Deployments → Retry deployment.
+2. The Supabase dashboard steps in `supabase/README.md`: run the three
+   migrations, create Erik's user, turn **Enable sign ups OFF**, insert the
+   `app_owner` row, create the private `documents` bucket, import
+   `migration/export/data.sql`, then re-run `migration/reconcile.mjs`
+   against the real project.
+
+Neither step involves a payment card, trial, upgrade, domain, or DNS change.
+The `anon` key is safe in the Pages build — RLS, not that key's secrecy, is
+what protects the data (`supabase/README.md`, "Keys: which is which"). The
+`service_role` key must never go there.
+
+Once both are done, the hosted dogfood pass of criterion 12 can run.
 
 ### Resolved: the npm-install blocker
 
@@ -49,18 +105,18 @@ Nothing was installed. `npm run build` is green and the bundle is 437 kB.
 
 | # | Criterion | Status |
 |---|---|---|
-| 1 | Pages serves frontend at public HTTPS while computer off | **Blocked** — no Cloudflare account. Build config + SPA `_redirects` ready and the fallback behaviour is locally verified. |
+| 1 | Pages serves frontend at public HTTPS while computer off | **Deployed and live-verified.** https://gapvera.pages.dev returns 200 from Cloudflare's edge (`cf-ray` present, `server: cloudflare`), independent of Erik's machine. SPA `_redirects` verified live (`/territory` → 200, index shell). The app itself is not yet backend-connected — see criterion 3 onward. |
 | 2 | No paid plan, trial, card, or purchased domain | **Held** — nothing was signed up for or purchased. Zero spend. The CARTO basemap, which now needs a paid key, was replaced rather than paid for (criterion 9). |
 | 3 | Supabase Auth; signup disabled; anon blocked from CRM | **Implemented + locally verified.** Against real Postgres: `anon` is refused on `leads` and `documents` at the privilege layer, cannot insert, and an authenticated non-owner sees 0 of 17 leads. The UI states that public signup is disabled and offers no register form. The dashboard toggle that enforces it server-side still needs the account (`supabase/README.md` step 4). |
 | 4 | Verified migrated copy reconciles against SQLite export | **Implemented + locally verified end-to-end.** `data.sql` was imported into a real Postgres 15, every table read back out as CSV, and `reconcile.mjs` matched all 7 per-table checksums and all foreign keys: *"RECONCILED — 21 row(s) across 7 table(s) match the preserved SQLite export."* |
 | 5 | CRM CRUD from a phone on cellular | **Implemented + locally verified; not deployed.** A full create → read → update → delete round-trip ran from the browser against real Postgres, leaving the 17 migrated leads intact. Mobile layout verified at 390 px (below). Cellular itself needs a deployment. |
 | 6 | Documents in private Storage, signed access only | **Implemented + locally verified (SQL).** `0002_storage.sql` *refuses to apply* against a public bucket — tested both ways: it aborted on a public bucket and applied cleanly on a private one. `DocLink.jsx` mints a signed URL per click, because a private bucket has no durable `href`. |
-| 7 | No localhost/LAN/secret/service-role key in bundle | **Verified on the shipped bundle.** Scanned `client/dist` after a production build: no JWT, no `service_role`, no credential, zero `localhost`/`127.0.0.1`/LAN matches, no stale `/api/` paths, and none of the local dogfood credentials. |
+| 7 | No localhost/LAN/secret/service-role key in bundle | **Live-verified on the deployed bundle.** The file served from https://gapvera.pages.dev (sha256 `ffd3c9b2…6ff7`, byte-identical to the local build) contains no JWT, no `service_role`, no credential, no `localhost`/`127.0.0.1`/LAN match, no `<ref>.supabase.co`, and no stale `/api/` path. |
 | 8 | Logout, expiry, direct API/Storage calls fail closed | **Implemented + locally verified.** Four paths each returned 401: tampered token, no token, direct Storage sign with no token, and a token reused after logout. On reload with a revoked token the app shows "Your session expired", clears the stored session, and leaks no lead data into the DOM. |
 | 9 | Map renders with attribution, no exposed credential | **Fixed this session + locally verified.** CARTO was silently broken (see below); the map now uses OpenStreetMap with required attribution and no credential at all. |
 | 10 | Durable job records; retries don't duplicate mutations | **Implemented + locally verified (SQL).** The unique index on `(job, idempotency_key)` was exercised against real Postgres: a duplicate claim for the same period is rejected, a new period still claims. A cross-day duplicate-draft bug in the Edge Function was found and fixed (see below). Not deployed, so not live-verified. |
 | 11 | Scraping/SMTP visibly unavailable, no fake success | **Implemented + locally verified.** The Scrape page shows an UNAVAILABLE badge, explains why, and offers CSV import — no dead search box. The Outreach composer says "DRAFTS ONLY — SENDING IS UNAVAILABLE" and offers *Save draft* / *Copy for sending*. Verified in the database: saving a draft writes `status='draft'` and leaves `outreach_status` and `last_contact_date` untouched, so nothing claims a send that did not happen. Email discovery and site auditing are likewise marked unavailable rather than stubbed. |
-| 12 | Hosted desktop + mobile dogfood passes | **Locally verified; hosted pass still required.** All 9 routes mount with real data at desktop width and at 390 px with **zero** horizontal overflow. Two real bugs were found by this pass and fixed (below). The acceptance gate explicitly demands this on the *real hosted product*, so this criterion is **not** closed. |
+| 12 | Hosted desktop + mobile dogfood passes | **Hosted shell verified; full pass still blocked.** The hosted site loads, fonts resolve, there is zero horizontal overflow at desktop width, and deep links resolve. But with no `VITE_SUPABASE_*` set the build fails closed at the configuration screen, so auth, CRM navigation, lead records, documents and the map cannot be exercised on the hosted product. All 9 routes passed this pass locally at desktop and 390 px with zero overflow. **Not closed.** |
 | 13 | Rollback/export artifact + documented restore rehearsal | **Done and rehearsed.** See below. Source SQLite is byte-identical after all of this session's work. |
 | 14 | Handoff distinguishes status levels | **This document.** |
 
@@ -221,18 +277,13 @@ revoked token.
 
 ## What a human needs to do to unblock
 
-1. Create a Supabase account + Free project, and a Cloudflare account
-   (no card, no trial, Free tiers only).
-2. Make the credentials available through the Hermes vault — **not** in chat,
-   not in a file in this repo.
-3. Grant push access to `Scorpionswag/gapvera` for the authenticated GitHub
-   user, or nominate a different remote.
+See "What Erik needs to do" at the top of this document. In short: set the two
+`VITE_SUPABASE_*` variables in the Cloudflare Pages project and retry the
+deployment, then complete the Supabase dashboard steps in
+`supabase/README.md`. Both are free-tier dashboard actions.
 
-Then the remaining work is mechanical: apply the three SQL migrations, import
-`migration/export/data.sql`, re-run `reconcile.mjs` against the real project,
-create the first auth user, disable public signup, deploy to Pages with
-`VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`, and run the hosted dogfood
-pass that criterion 12's gate requires.
+GitHub access and the Pages deployment are no longer blockers — they were
+resolved in this pass.
 
 ## Files added by this task
 
