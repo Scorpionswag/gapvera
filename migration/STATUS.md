@@ -1,6 +1,6 @@
 # GapVera zero-cost migration — status
 
-Task `t_961bc97c` (final deployment pass; supersedes `t_9c4aa30f`).
+Task `t_46fd6cfc` (production `app_owner` login failure; supersedes `t_961bc97c`).
 Assessed against `handoff/zero-cost/acceptance.md`.
 
 Status vocabulary is deliberate (acceptance criterion 14). **Implemented** means
@@ -8,6 +8,104 @@ code exists. **Tests passing** means automated tests cover it and pass.
 **Locally verified** means it was executed against a real Postgres and a real
 browser on this machine. **Provider-configured**, **deployed**, and
 **live-verified** mean exactly what they say.
+
+## Production incident, 2026-11-06 — root cause and fix
+
+Erik's screenshot showed this on the live login form at
+https://gapvera.pages.dev after submitting credentials:
+
+```
+Could not find the table 'public.app_owner' in the schema cache
+```
+
+**Root cause: the schema migration was never applied to the production
+Supabase project.** Measured against the live project, not inferred:
+
+| Probe | Result |
+|---|---|
+| `/rest/v1/app_owner` | 404 `PGRST205` — table not in schema cache |
+| `/rest/v1/leads` | 404 `PGRST205` |
+| `/rest/v1/job_runs` | 404 `PGRST205` |
+| `/rest/v1/rpc/is_owner` | 404 `PGRST202` — function missing too |
+| `/auth/v1/token` (bad password) | 400 `invalid_credentials` — **GoTrue is healthy** |
+| `/auth/v1/signup` | rejected — public signup correctly disabled |
+
+So Auth works and the database is empty of schema. A **stale schema cache
+was ruled out**: PostgREST emits a *"perhaps you meant"* hint when a similarly
+named relation exists, and near-miss probes (`app_owners`, `leadz`) returned
+no hint at all. The relations do not exist; the cache is not merely stale.
+
+Applying the migration is a Supabase dashboard action that requires Erik's
+login, so **this session could not provision the database** (see "Remaining
+blocker"). But the client's *handling* of that state was wrong in three
+distinct ways, each a real defect and each fixed in commit `656ceaa`:
+
+1. **A provisioning fault was reported as a login failure.** An unprovisioned
+   backend was indistinguishable from a wrong password, so the only action the
+   UI offered was retyping a password that was already correct. `PGRST205` and
+   `PGRST202` are now detected as their own condition and routed to a new
+   `BackendNotProvisionedScreen`. It is checked *before* the not-owner branch,
+   because with no `app_owner` table "not the owner" is unknowable rather than
+   false. Access still fails closed.
+2. **A live token was left behind a login form.** `auth.login()` signs in
+   before it verifies ownership, so any throw after sign-in left a valid
+   session in `localStorage` while the UI showed a login screen — a reload
+   would walk straight back into the broken state holding a token the user
+   never knowingly kept. Every post-sign-in failure path now signs out first.
+3. **Database internals leaked to a public screen.** Raw PostgREST text naming
+   an internal table was rendered to anyone who could load the site.
+   human-facing messages no longer carry table names, schema names, or PGRST
+   codes; the code is retained on the error object for diagnostics only.
+
+`0001_schema.sql` additionally now ends with a **post-apply verification
+block** that raises if any of the 9 tables, `is_owner()`, or RLS on any table
+is missing — so a partial apply fails loudly at migration time instead of
+silently at first login — followed by `notify pgrst, 'reload schema'`, since a
+stale cache and a missing table are indistinguishable at the API (both 404
+`PGRST205`).
+
+### Evidence
+
+- **13 new regression tests**, each confirmed **red against the pre-fix code**
+  and green after. Suite went 99 → **112 passing, 0 failing**.
+  (`client/src/authFlow.test.mjs`, plus 5 cases in `supabase.test.mjs`.)
+- **Real Postgres 15**: `0001_schema.sql` applies cleanly and its new
+  verification block reports *"GapVera schema verified: 9 tables, is_owner()
+  present, RLS enabled on all."*
+- **RLS not weakened**: all **17** assertions in `10-rls-assertions.sql` pass
+  (exit 0) on shim + schema + storage + data, including both
+  privilege-escalation attempts.
+- **Real browser, exact reproduction.** `unprovisioned-stub.mjs` reproduces
+  production byte-for-byte (GoTrue 200 + session, PostgREST 404 `PGRST205`).
+  Submitting the login form now lands on *"GapVera's database isn't set up
+  yet."* with: no `app_owner` / `schema cache` / `PGRST` string anywhere in the
+  DOM, **no stored session**, no password in `localStorage`, and zero console
+  errors.
+- **No overcorrection.** Against `provisioned-stub.mjs` (owner row present) the
+  same build signs straight through to the Dashboard with owner data visible.
+- **Deployed and live-verified.** Commit `656ceaa` is on
+  `Scorpionswag/gapvera@main` (confirmed by API readback). It triggered a
+  **genuinely new** Pages deployment — `893da117-8a2c-41ac-a484-e3569f4fe322`,
+  distinct from the previous `e6bb72bc-…` — check run "Cloudflare Pages"
+  completed `success` at 2026-11-07T05:17:09Z. The bundle fetched **from the
+  live origin** (`/assets/index-jDw9CGWA.js`, 439362 bytes, sha256
+  `a2717037998456e3d2ee888c8f02faa9059f446d93ad8099a274d8bc42327971`) contains
+  the new screen copy and the PGRST detection, and contains **no**
+  `schema cache` text, no `service_role`, and no JWT literal.
+
+### What is NOT claimed
+
+The production database is **still unprovisioned** — re-probed after the
+deployment, `app_owner` still returns 404 `PGRST205`. The fix changes what
+Erik *sees* in that state (an honest, actionable setup screen instead of a raw
+database error that blamed his password); it does not and cannot create the
+schema, because that requires dashboard access that is Erik's alone.
+
+**The post-login screen was not exercised against the production database**,
+because doing so needs Erik's password, which this session must never request
+or handle. It was exercised in a real browser against a stub returning
+production's exact responses, and the shipped bytes serving that code path
+were verified from the live origin.
 
 ## Current state (2026-11-06): pushed and deployed, one user-only gate left
 
@@ -40,6 +138,40 @@ Resolved this pass:
   shell, so `client/public/_redirects` is in effect.
 
 ## Remaining blocker (user-only)
+
+**Superseded as of 2026-11-07.** `VITE_SUPABASE_URL` and
+`VITE_SUPABASE_ANON_KEY` **are now set** in the Cloudflare Pages project —
+verified from the live bundle, which contains
+`https://iwmdfapdzyqfzhdgzdpa.supabase.co` and an `sb_publishable_…` key (the
+correct publishable key kind, not a JWT and not `service_role`). The site no
+longer shows the CONFIGURATION MISSING card; it reaches the real login form.
+
+**The one remaining gate is the Supabase dashboard setup**, which is why
+login fails: the schema migration has never been run against the project, so
+every table returns 404 `PGRST205` (see "Production incident" above).
+
+### What Erik needs to do (all free, all dashboard)
+
+In the Supabase dashboard for project `iwmdfapdzyqfzhdgzdpa`, follow
+`supabase/README.md` steps 2–8:
+
+1. **SQL editor → paste and run `supabase/migrations/0001_schema.sql`.** It
+   now self-verifies and will raise if the apply is incomplete. On success it
+   prints *"GapVera schema verified: 9 tables, is_owner() present, RLS enabled
+   on all."*
+2. **Authentication → Users → Add user** (email + password). Not a signup form.
+3. **Authentication → Providers → Email → "Enable sign ups" OFF.**
+4. **SQL editor → grant ownership** (README step 5) — without this row every
+   table correctly returns zero rows.
+5. **Storage → New bucket `documents`, Public OFF**, then run
+   `0002_storage.sql` (it refuses to apply to a public bucket).
+6. **Import** `migration/export/data.sql`, then reconcile per README step 7.
+
+No payment card, trial, upgrade, domain, or DNS change is involved at any
+step. Once step 1 and step 4 are done, the login that currently lands on the
+setup screen will reach the Dashboard.
+
+## Previous blocker, now resolved (recorded 2026-11-06)
 
 **`VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are not set in the
 Cloudflare Pages project, so the deployed build fails closed.**
