@@ -88,24 +88,28 @@ export async function onRequest(context) {
     return refusal(415, 'Send a JSON body.', 'unsupported_media_type');
   }
 
-  // ---- 2. Key presence ----------------------------------------------------
-  // Fail closed and say so plainly. The old local adapter returned generated
-  // mock results when the key was absent; that is exactly the "fake success"
-  // the acceptance criteria forbid, so it is not reproduced here.
-  const key = googleKey(env);
-  if (!key) {
-    return refusal(
-      503,
-      'Google lookup is not configured for this deployment, so no search was performed.',
-      'google_key_missing'
-    );
-  }
-
   let ctx;
   let reservation = null;
   try {
-    // ---- 3. Owner authentication -----------------------------------------
+    // ---- 2. Owner authentication ------------------------------------------
+    // BEFORE the key-presence check: deployment configuration is not a fact an
+    // anonymous caller is entitled to. Doing this in the other order let an
+    // unauthenticated request distinguish "no key here" from "key present",
+    // which is a small infrastructure leak and was caught in live testing.
     ctx = await requireOwner(request, env);
+
+    // ---- 3. Key presence --------------------------------------------------
+    // Fail closed and say so plainly. The old local adapter returned generated
+    // mock results when the key was absent; that is exactly the "fake success"
+    // the acceptance criteria forbid, so it is not reproduced here.
+    const key = googleKey(env);
+    if (!key) {
+      return refusal(
+        503,
+        'Google lookup is not configured for this deployment, so no search was performed.',
+        'google_key_missing'
+      );
+    }
 
     // ---- 4. Input validation ---------------------------------------------
     let body;

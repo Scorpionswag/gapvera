@@ -195,6 +195,27 @@ await check('a missing Google key fails closed with no mock results', async () =
   // The old local adapter returned generated mock businesses here. That is the
   // "fake success" the acceptance criteria forbid; assert it is really gone.
   assert.ok(!('results' in body), 'a key-less deployment must not return results');
+  // Supabase IS contacted now (auth runs first, deliberately — see the next
+  // case). What must never happen is a billable Google request.
+  assert.equal(outbound.filter((c) => c.url.includes('googleapis')).length, 0);
+  assert.equal(ledger.today, 0, 'an unconfigured deployment must not consume a slot');
+});
+
+await check('an anonymous caller is refused BEFORE deployment config is revealed', async () => {
+  // Caught against the LIVE deployment: the key check used to run before
+  // authentication, so an anonymous POST received 503 google_key_missing and
+  // could tell a configured deployment from an unconfigured one. Auth first.
+  installStubFetch();
+  const anon = new Request('https://g.example/api/places/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ niche: 'plumber', city: 'Miami' }),
+  });
+  const res = await search({ request: anon, env: { ...ENV, GOOGLE_MAPS_API_KEY: '' } });
+  assert.equal(res.status, 401, 'anonymous must get 401, not 503');
+  const body = await res.json();
+  assert.equal(body.reason, 'no_token');
+  assert.ok(!/configur|key/i.test(body.error), `must not disclose key config: ${body.error}`);
   assert.equal(outbound.length, 0);
 });
 
