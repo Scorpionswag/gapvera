@@ -7,8 +7,9 @@
     "dev": "concurrently -n server,client -c blue,magenta \"npm run dev -w server\" \"npm run dev -w client\"",
     "seed": "npm run seed -w server",
     "build": "npm run build -w client",
-    "test": "node --test client/src/*.test.mjs migration/migration.test.mjs",
+    "test": "node --test client/src/*.test.mjs functions/*.test.mjs migration/migration.test.mjs",
     "test:client": "node --test client/src/*.test.mjs",
+    "test:functions": "node --test functions/*.test.mjs",
     "test:migration": "node --test migration/migration.test.mjs",
     "migrate:export": "node migration/export-sqlite.mjs server/crm.db migration/export",
     "migrate:verify": "node migration/reconcile.mjs migration/export"

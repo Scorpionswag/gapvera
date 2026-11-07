@@ -10,3 +10,5 @@ client/.env.local
 # They are generated on demand (see migration/README.md) and must not be
 # committed.
 migration/export/
+client/dist-dogfood/
+.DS_Store

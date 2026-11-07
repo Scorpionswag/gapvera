@@ -267,7 +267,10 @@ function Workspace({ onLoggedOut }) {
           {/* These say "unavailable", not "mock": nothing is pretending to
               work in the background. See acceptance criterion 11. */}
           <div className="micro">email sending — unavailable</div>
-          <div className="micro">lead scraping — unavailable</div>
+          {/* Google Places lookup is available as of 2026-11-07 and it costs
+              money per lookup, so the rail says so rather than leaving the
+              old "unavailable" line to go quietly stale. */}
+          <div className="micro">Google lookup — live, billed per search</div>
           <div className="micro">auto-send — off</div>
         </div>
       </aside>

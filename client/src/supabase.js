@@ -227,6 +227,64 @@ async function authedFetch(path, { method = "GET", headers = {}, body, raw = fal
 // Auth
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// GapVera's own API surface (Cloudflare Pages Functions)
+// ---------------------------------------------------------------------------
+
+/**
+ * Call a same-origin GapVera Function with the caller's Supabase access token.
+ *
+ * Used only by the Google Places lookup proxy, which exists so the Google API
+ * key stays server-side. The token is sent so the Function can verify, against
+ * Supabase, that the caller is the owner — the Function holds no privileged
+ * credential of its own.
+ *
+ * Shares this module's token handling on purpose: the same refresh-before-use
+ * logic, and the same auth-lost teardown on a 401, so a lookup cannot be the
+ * one place in the app that keeps a dead session alive.
+ */
+export async function apiFetch(path, { method = 'GET', body } = {}) {
+  const token = await accessToken();
+  if (!token) {
+    announceAuthLost('expired');
+    throw new ApiError('Your session expired.', 401);
+  }
+
+  const res = await fetch(path, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+
+  let payload = null;
+  try {
+    const text = await res.text();
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    /* non-JSON body; handled as a status-only failure below */
+  }
+
+  if (res.status === 401) {
+    announceAuthLost('expired');
+    throw new ApiError(payload?.error || 'Your session expired.', 401);
+  }
+
+  if (!res.ok) {
+    // Deliberately does NOT tear the session down on 403: the Function returns
+    // 403 when it could not confirm ownership, which includes a transient
+    // backend fault. Logging the user out over that would be an overreaction.
+    const err = new ApiError(payload?.error || `Request failed (${res.status}).`, res.status);
+    err.reason = payload?.reason || null;
+    err.usage = payload?.usage || null;
+    throw err;
+  }
+
+  return payload;
+}
+
 export const supaAuth = {
   // Public signup is disabled in the dashboard (acceptance 3) and there is no
   // signUp call anywhere in this client, so the app offers no path to create

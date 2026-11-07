@@ -1,0 +1,6 @@
+{
+  "name": "gapvera-functions",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Pages Functions. ESM, no dependencies, no build step. `type: module` is required so Node (the test harness) and Wrangler both parse these as ES modules rather than reparsing them as CommonJS."
+}

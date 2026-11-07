@@ -20,6 +20,7 @@ import {
   storage,
   currentUser,
   hasSession,
+  apiFetch,
   AUTH_LOST_EVENT,
 } from "./supabase.js";
 import {
@@ -57,13 +58,11 @@ export class FeatureUnavailable extends Error {
 // Capabilities the zero-cost build does not have, with the honest reason and
 // the manual path that replaces each. The UI reads these so the explanation
 // lives in exactly one place.
+//
+// `scrape` is deliberately absent: Google Places lookup is now AVAILABLE, in a
+// reduced live-lookup form. See PLACES_POLICY below for what it can and cannot
+// do, and why.
 export const UNAVAILABLE = {
-  scrape: {
-    feature: "Google Places lead scraping",
-    reason:
-      "Lead scraping is turned off in this build. The Google Places API requires a billed Google Cloud account, which this deployment deliberately does not have.",
-    alternative: "Add leads by hand, or import a CSV on the Leads page.",
-  },
   sendEmail: {
     feature: "Automated email sending",
     reason:
@@ -88,6 +87,49 @@ export const UNAVAILABLE = {
 const unavailable = (key) => {
   const u = UNAVAILABLE[key];
   throw new FeatureUnavailable(u.feature, u.reason, u.alternative);
+};
+
+// ---------------------------------------------------------------------------
+// Google Places lookup — what it does, and what it deliberately will not do
+// ---------------------------------------------------------------------------
+//
+// Erik authorized chargeable Google Places usage on 2026-11-07. What that buys
+// is a LIVE LOOKUP, not the "scrape into the CRM" the original local adapter
+// did. The reduction is not a technical shortcut — it is the licence:
+//
+//   * Google Maps Platform Terms 3.2.3(a) "No Scraping" and (b) "No Caching"
+//     forbid storing Places content. Writing business names, addresses, phone
+//     numbers or ratings into the leads table is exactly the prohibited act,
+//     so GapVera does not do it, silently or otherwise.
+//   * The same clause forbids EXPORTING it, so there is deliberately no CSV
+//     download of lookup results either. A CSV of Google's business names and
+//     addresses is the textbook example of extracting Content outside the
+//     Services — it would be the same violation with an extra step.
+//   * GapVera also does not pre-fill its lead form from a result. A prefill
+//     looks like a convenience but it is a copy: the app would be the
+//     instrument that moves Google's content into the database. Erik's own
+//     typed record of a business he found is his; a machine transcription of
+//     Google's payload is not.
+//   * The place ID is the one documented exception — the Service Specific
+//     Terms allow it to be stored indefinitely. Nothing else is storable, and
+//     `cacheablePlaceFields` in functions/_lib/places.js is the single place
+//     that states so.
+//   * 3.2.3(e) "No Use With Non-Google Maps" forbids putting Places content on
+//     a non-Google map. GapVera's Territory map is OpenStreetMap, so the proxy
+//     does not even request coordinates: lookup results cannot reach it.
+//
+// The UI states all of this where the feature is used. A user who expects
+// "scrape 20 leads into my pipeline" must not have to discover the difference
+// by finding an empty Leads page.
+export const PLACES_POLICY = {
+  feature: "Google Places lookup",
+  what: "Searches Google Places live and shows what it finds, with Google attribution.",
+  limits: [
+    "Results are live for this lookup only. GapVera does not save them, export them, or copy them into a lead — Google's terms forbid storing or extracting Places content.",
+    "To work a business you find here, add it on the Leads page as your own entry. GapVera deliberately does not pre-fill that form from Google.",
+    "Lookup results never appear on the Territory map: it is an OpenStreetMap map, and Google's terms forbid showing Places content on a non-Google map.",
+  ],
+  cost: "Each lookup is one billable Google request. Daily and monthly caps are enforced server-side.",
 };
 
 // ---------------------------------------------------------------------------
@@ -172,7 +214,10 @@ export const auth = {
 // ---------------------------------------------------------------------------
 
 export const api = {
-  // No server to ask, so capabilities are reported from the build itself.
+  // No server to ask for CRM capabilities, so they are reported from the build
+  // itself. `mapsConfigured` is the one thing the build cannot know: the Google
+  // key lives only in the Pages Function's environment, by design. The UI asks
+  // the Function (api.placesUsage) rather than guessing here.
   config: async () => ({
     smtpConfigured: false,
     mapsConfigured: false,
@@ -180,6 +225,16 @@ export const api = {
     scrapeAvailable: false,
     backend: "supabase",
   }),
+
+  // ---------- Google Places (live lookup only — see PLACES_POLICY) ----------
+
+  // Current allowance. Spends nothing: this reads the ledger, not Google.
+  placesUsage: () => apiFetch("/api/places/usage"),
+
+  // One lookup = one billable Google request. The key never reaches this
+  // bundle; the Pages Function holds it and verifies ownership first.
+  placesSearch: (niche, city) =>
+    apiFetch("/api/places/search", { method: "POST", body: { niche, city } }),
 
   // ---------- Leads ----------
   leads: () => db.select("leads", "order=lead_score.desc"),
@@ -306,7 +361,11 @@ export const api = {
   // ---------- Disabled capabilities (acceptance 11) ----------
   runAudit: () => unavailable("audit"),
   findEmail: () => unavailable("findEmail"),
-  scrape: () => unavailable("scrape"),
+
+  // `api.scrape` is deliberately GONE rather than redefined. A method named
+  // "scrape" that performed a compliant live lookup would invite a call site
+  // to treat the result as scraped data it may keep. Use api.placesSearch,
+  // whose name and PLACES_POLICY say what it actually is.
 
   // ---------- Clients ----------
   clients: () => db.select("clients", "order=created_at.desc"),
