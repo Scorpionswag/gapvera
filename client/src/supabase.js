@@ -39,11 +39,34 @@ const DOCUMENTS_BUCKET = "documents";
 const REFRESH_SKEW_SECONDS = 60;
 
 class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, { pgCode = null, schemaMissing = false } = {}) {
     super(message);
     this.status = status;
+    // PostgREST's own error code, kept for diagnostics. Deliberately separate
+    // from `message`: the message is rendered to a human on a public screen,
+    // this is for code and logs.
+    this.pgCode = pgCode;
+    // True when the database has no such table/function at all — a deployment
+    // that was never migrated, not a request that was refused.
+    this.schemaMissing = schemaMissing;
   }
 }
+
+// PostgREST reports an unmigrated database as a 404 with one of these codes:
+//   PGRST205  table/view not found in the schema cache
+//   PGRST202  function not found in the schema cache
+// This is categorically different from 401/403 (authenticated-but-refused) and
+// from a row-level empty result. Treating it as an auth failure was the
+// 2026-11-06 production incident: the login form showed the raw text
+// "Could not find the table 'public.app_owner' in the schema cache", which
+// named an internal table on a public screen and told Erik to fix his
+// password when the real fault was an unapplied migration.
+const SCHEMA_CACHE_CODES = new Set(["PGRST205", "PGRST202"]);
+
+// Said to a human. Names no table, no schema, no error code.
+const NOT_PROVISIONED_MESSAGE =
+  "GapVera's database is not set up yet, so there is nothing to sign in to. " +
+  "The schema migration has not been applied to this project.";
 
 // ---------------------------------------------------------------------------
 // Session storage
@@ -175,13 +198,23 @@ async function authedFetch(path, { method = "GET", headers = {}, body, raw = fal
 
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
+    let pgCode = null;
     try {
       const err = await res.json();
+      pgCode = err.code || null;
       detail = err.message || err.error_description || err.error || err.hint || detail;
     } catch {
       /* non-JSON error body; keep the status line */
     }
-    throw new ApiError(detail, res.status);
+
+    // An unmigrated database is a deployment fault. Surface it as its own kind
+    // of error with a human-safe message, and crucially do NOT clear the
+    // session — the token is valid and the user did nothing wrong.
+    if (res.status === 404 && SCHEMA_CACHE_CODES.has(pgCode)) {
+      throw new ApiError(NOT_PROVISIONED_MESSAGE, res.status, { pgCode, schemaMissing: true });
+    }
+
+    throw new ApiError(detail, res.status, { pgCode });
   }
 
   if (raw) return res;
@@ -252,6 +285,13 @@ export const supaAuth = {
       };
     } catch (err) {
       if (err.status === 401 || err.status === 403) return { authenticated: false };
+      // The table does not exist, so ownership is undecidable. Report the
+      // authentication that genuinely succeeded, withhold ownership (fail
+      // closed), and name the real fault so the caller can say so instead of
+      // blaming the password.
+      if (err.schemaMissing) {
+        return { authenticated: true, isOwner: false, schemaMissing: true };
+      }
       throw err;
     }
   },

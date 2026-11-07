@@ -31,6 +31,17 @@ for billing, stop; it means the plan drifted and the decision needs revisiting.
    Until this row exists, every table correctly returns zero rows: `is_owner()`
    is false, so RLS denies everything. That is the intended fail-closed state.
 
+   > **Step 2 is not optional, and skipping it looks like a login bug.**
+   > On 2026-11-06 the live site reported
+   > `Could not find the table 'public.app_owner' in the schema cache`
+   > on the login form because the project had Auth configured but the schema
+   > migration had never been run. Sign-in succeeded; there was simply no
+   > database behind it. `0001_schema.sql` now ends with a verification block
+   > that raises if any of the 9 tables, `is_owner()`, or RLS is missing, and
+   > issues `notify pgrst, 'reload schema'` so PostgREST re-reads the schema
+   > instead of serving a stale cache. If that block raises, re-run the whole
+   > file — do not proceed to step 3.
+
 6. **Import the data**: run `supabase/migrations/0001_schema.sql` first, then
    paste `migration/export/data.sql`. Generate it with:
 

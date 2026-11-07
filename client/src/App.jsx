@@ -7,6 +7,7 @@ import {
   AuthUnavailableScreen,
   NotConfiguredScreen,
   NotAuthorizedScreen,
+  BackendNotProvisionedScreen,
 } from "./pages/Auth.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import Leads from "./pages/Leads.jsx";
@@ -67,6 +68,10 @@ const PHASE = {
   UNAVAILABLE: "unavailable",
   NOT_CONFIGURED: "not-configured",
   NOT_AUTHORIZED: "not-authorized",
+  // The build is configured and Supabase answers, but the database has no
+  // schema. Distinct from NOT_CONFIGURED (no credentials in the build) and
+  // from NOT_AUTHORIZED (schema exists, this account is not the owner).
+  NOT_PROVISIONED: "not-provisioned",
 };
 
 export default function App() {
@@ -81,6 +86,9 @@ export default function App() {
     try {
       const status = await auth.status();
       if (status.authenticated) return setPhase(PHASE.READY);
+      // Checked before the owner branch: with no app_owner table, "not the
+      // owner" is unknowable rather than false.
+      if (status.backendNotProvisioned) return setPhase(PHASE.NOT_PROVISIONED);
       if (status.authenticatedNotOwner) return setPhase(PHASE.NOT_AUTHORIZED);
       return setPhase(PHASE.LOGIN);
     } catch {
@@ -119,6 +127,16 @@ export default function App() {
       );
     case PHASE.NOT_CONFIGURED:
       return <NotConfiguredScreen />;
+    case PHASE.NOT_PROVISIONED:
+      return (
+        <BackendNotProvisionedScreen
+          onSignOut={async () => {
+            await auth.logout();
+            setLoginReason(null);
+            setPhase(PHASE.LOGIN);
+          }}
+        />
+      );
     case PHASE.UNAVAILABLE:
       return <AuthUnavailableScreen onRetry={checkStatus} />;
     case PHASE.NOT_AUTHORIZED:
@@ -140,6 +158,10 @@ export default function App() {
           onAuthenticated={() => {
             setLoginReason(null);
             setPhase(PHASE.READY);
+          }}
+          onBackendNotProvisioned={() => {
+            setLoginReason(null);
+            setPhase(PHASE.NOT_PROVISIONED);
           }}
         />
       );

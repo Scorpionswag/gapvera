@@ -107,7 +107,16 @@ export const auth = {
       // Signed in but not the owner is its own state: the credentials were
       // right, the authorization is missing. Saying "wrong password" would
       // send the operator chasing the wrong problem.
-      authenticatedNotOwner: Boolean(result.authenticated && !result.isOwner),
+      //
+      // An unprovisioned database is explicitly excluded here. Ownership is
+      // unknowable when app_owner does not exist, and the "this account can't
+      // open GapVera" screen would be a false claim about a possibly-valid
+      // owner. It gets its own state below.
+      authenticatedNotOwner: Boolean(
+        result.authenticated && !result.isOwner && !result.schemaMissing
+      ),
+      // The backend has no schema. A deployment fault, not a login problem.
+      backendNotProvisioned: Boolean(result.schemaMissing),
       setupRequired: false,
       user: result.user || null,
     };
@@ -115,13 +124,41 @@ export const auth = {
 
   async login(email, password) {
     await supaAuth.signIn(email, password);
-    const result = await supaAuth.verify();
-    if (!result.authenticated) throw new Error("Sign in did not produce a usable session.");
+    // Sign-in has already stored a live session. Everything below this point
+    // must leave storage clean on any failure, or a reload walks back into a
+    // broken state holding a token the user never knowingly kept.
+    let result;
+    try {
+      result = await supaAuth.verify();
+    } catch (err) {
+      await supaAuth.signOut();
+      throw err;
+    }
+
+    if (!result.authenticated) {
+      await supaAuth.signOut();
+      throw new Error("Sign in did not produce a usable session.");
+    }
+
+    // The credentials were accepted; the database simply has no schema. Say
+    // that, rather than implying the account is at fault.
+    if (result.schemaMissing) {
+      await supaAuth.signOut();
+      const err = new Error(
+        "Your sign-in worked, but GapVera's database is not set up yet. " +
+          "The schema migration has not been applied to this project, so there is nothing to open."
+      );
+      err.backendNotProvisioned = true;
+      throw err;
+    }
+
     if (!result.isOwner) {
       // Do not leave a live token sitting in storage for an account that is
       // not allowed in.
       await supaAuth.signOut();
-      throw new Error("This account is not authorized for GapVera.");
+      const err = new Error("This account is not authorized for GapVera.");
+      err.notAuthorized = true;
+      throw err;
     }
     return { authenticated: true, user: result.user };
   },

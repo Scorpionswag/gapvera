@@ -107,7 +107,7 @@ const inputClass =
   "focus:outline-none focus:border-ember/60 focus:ring-1 focus:ring-ember/40";
 
 /** Sign in with Supabase Auth. `reason` explains why the screen is showing. */
-export function LoginScreen({ reason, onAuthenticated }) {
+export function LoginScreen({ reason, onAuthenticated, onBackendNotProvisioned }) {
   const [email, setEmail] = useState(() => localStorage.getItem("gapvera.last_email") || "");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -134,8 +134,15 @@ export function LoginScreen({ reason, onAuthenticated }) {
       setPassword("");
       onAuthenticated();
     } catch (err) {
-      setError(err.message);
       setPassword("");
+      // An unprovisioned database is not a login error and must not be shown
+      // as one on this form — the password was right, and inviting a retry
+      // would be a lie. Hand off to the screen that explains the real fault.
+      if (err.backendNotProvisioned && onBackendNotProvisioned) {
+        localStorage.setItem("gapvera.last_email", email.trim());
+        return onBackendNotProvisioned();
+      }
+      setError(err.message);
     } finally {
       setBusy(false);
     }
@@ -228,6 +235,39 @@ export function NotConfiguredScreen() {
           them requires a new deployment, not just a page reload.
         </p>
       </div>
+    </Shell>
+  );
+}
+
+/**
+ * Signed in successfully, but the database has no schema — the migration was
+ * never applied to the project. This was a real production failure on
+ * 2026-11-06: the login form showed PostgREST's raw
+ * "Could not find the table 'public.app_owner' in the schema cache", which
+ * named an internal table on a public screen and read as a login problem. It
+ * is neither. The credentials worked; the backend is unbuilt.
+ *
+ * No table name, schema name, or error code appears here — this screen is
+ * reachable by anyone who can load the site.
+ */
+export function BackendNotProvisionedScreen({ onSignOut }) {
+  return (
+    <Shell
+      step="Setup incomplete"
+      title="GapVera's database isn't set up yet."
+      lede="Your sign-in worked — your email and password are correct. But the database behind GapVera has no tables yet, so there are no records to open."
+    >
+      <div className="mt-5 text-sm text-dim space-y-2">
+        <p>
+          This is a one-time setup step on the hosting side, not something you can fix by signing in
+          again. The database schema has to be applied to the project before GapVera has anywhere to
+          read or write.
+        </p>
+        <p>Nothing has been lost: no records existed to lose, and your source data is untouched.</p>
+      </div>
+      <button type="button" className={submitClass} onClick={onSignOut}>
+        Sign out
+      </button>
     </Shell>
   );
 }

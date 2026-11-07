@@ -244,3 +244,69 @@ begin
     execute format('grant usage, select on sequence %s to authenticated', s);
   end loop;
 end $$;
+
+-- ---------------------------------------------------------------------------
+-- Post-apply verification and schema-cache reload
+-- ---------------------------------------------------------------------------
+
+-- Fail loudly if this migration did not actually produce what the client
+-- requires. Without this, a partial apply (an aborted SQL-editor paste, a
+-- statement skipped after an error) leaves a project that looks migrated but
+-- answers 404 on the first login — the 2026-11-06 production failure, where
+-- the live site reported
+--   Could not find the table 'public.app_owner' in the schema cache
+-- after a successful sign-in. An error here is far cheaper than that.
+do $$
+declare
+  missing text[] := '{}';
+  t text;
+begin
+  foreach t in array array[
+    'app_owner', 'leads', 'clients', 'calls',
+    'email_templates', 'email_logs', 'documents', 'invoices', 'job_runs'
+  ] loop
+    if to_regclass('public.' || quote_ident(t)) is null then
+      missing := missing || t;
+    end if;
+  end loop;
+
+  if array_length(missing, 1) is not null then
+    raise exception
+      'migration incomplete: missing table(s): %. Re-run 0001_schema.sql in full.',
+      array_to_string(missing, ', ');
+  end if;
+
+  -- The RLS gate itself. If app_owner exists but is_owner() does not, every
+  -- policy that calls it fails at query time instead of at migration time.
+  if to_regprocedure('public.is_owner()') is null then
+    raise exception 'migration incomplete: public.is_owner() is missing. Re-run 0001_schema.sql in full.';
+  end if;
+
+  -- RLS off on any CRM table would mean a signed-in non-owner reads
+  -- everything. Verify, do not assume, since it is enabled in a loop above.
+  for t in
+    select c.relname
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public'
+      and c.relkind = 'r'
+      and c.relname in (
+        'app_owner', 'leads', 'clients', 'calls',
+        'email_templates', 'email_logs', 'documents', 'invoices', 'job_runs'
+      )
+      and not c.relrowsecurity
+  loop
+    raise exception 'migration incomplete: row level security is disabled on public.%', t;
+  end loop;
+
+  raise notice 'GapVera schema verified: 9 tables, is_owner() present, RLS enabled on all.';
+  raise notice 'Next: grant ownership (see supabase/README.md step 5) — until then every table correctly returns zero rows.';
+end $$;
+
+-- PostgREST serves from a cached introspection of the schema. It listens for
+-- this signal to re-read it. Supabase normally triggers a reload via DDL event
+-- triggers, but that is not guaranteed for every apply path, and a stale cache
+-- is indistinguishable at the API from a table that was never created: both
+-- return 404 PGRST205. Asking explicitly costs nothing and removes the
+-- ambiguity.
+notify pgrst, 'reload schema';

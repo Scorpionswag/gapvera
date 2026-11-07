@@ -373,6 +373,108 @@ test("verify reports isOwner true when app_owner returns the user's row", async 
   assert.equal(result.isOwner, true);
 });
 
+// ---------------------------------------------------------------------------
+// Unprovisioned backend (the production incident of 2026-11-06)
+//
+// The live site reached Supabase, signed the user in, then showed
+// "Could not find the table 'public.app_owner' in the schema cache" on the
+// login form. The database migration had never been applied. Three things
+// were wrong, and each is pinned below:
+//   * a provisioning fault was reported as a credential failure;
+//   * raw PostgREST internals (table names, PGRST codes) reached the UI;
+//   * sign-in had already succeeded, so a live token was left in storage.
+// ---------------------------------------------------------------------------
+
+const SCHEMA_MISSING_BODY = {
+  code: "PGRST205",
+  message: "Could not find the table 'public.app_owner' in the schema cache",
+};
+
+test("verify flags a missing app_owner table as a provisioning fault, not a login failure", async () => {
+  reset();
+  localStorage.setItem(SESSION_KEY, JSON.stringify(futureSession()));
+  handler = async (url) => {
+    if (String(url).includes("/auth/v1/user")) {
+      return jsonResponse(200, { id: "user-1", email: "erik@example.com" });
+    }
+    return jsonResponse(404, SCHEMA_MISSING_BODY);
+  };
+
+  const result = await supaAuth.verify();
+
+  // The credentials were genuinely accepted — saying otherwise sends the
+  // operator to retype a working password.
+  assert.equal(result.authenticated, true);
+  assert.equal(result.schemaMissing, true);
+  // Fail closed: ownership is undecidable, so it is not granted.
+  assert.equal(result.isOwner, false);
+});
+
+test("a missing table does not clear the session (a valid token is not the fault)", async () => {
+  reset();
+  localStorage.setItem(SESSION_KEY, JSON.stringify(futureSession()));
+  handler = async () => jsonResponse(404, SCHEMA_MISSING_BODY);
+
+  await assert.rejects(() => db.select("leads"));
+
+  assert.ok(localStorage.getItem(SESSION_KEY), "session must survive a 404");
+  assert.equal(
+    events.filter((e) => e.type === AUTH_LOST_EVENT).length,
+    0,
+    "a provisioning fault must not fire auth-lost"
+  );
+});
+
+test("a schema-missing error does not leak PostgREST internals into its message", async () => {
+  reset();
+  localStorage.setItem(SESSION_KEY, JSON.stringify(futureSession()));
+  handler = async () => jsonResponse(404, SCHEMA_MISSING_BODY);
+
+  const err = await db.select("leads").then(
+    () => assert.fail("should reject"),
+    (e) => e
+  );
+
+  assert.equal(err.schemaMissing, true);
+  // The diagnostic code stays available to code; the human-facing string must
+  // not carry the table name or the PGRST code.
+  assert.equal(err.pgCode, "PGRST205");
+  assert.doesNotMatch(err.message, /app_owner|schema cache|PGRST/i);
+});
+
+test("a missing RPC (PGRST202) is also treated as unprovisioned", async () => {
+  // is_owner() lives in the same migration as app_owner; if one is absent the
+  // other is too, and both must route to the same explanation.
+  reset();
+  localStorage.setItem(SESSION_KEY, JSON.stringify(futureSession()));
+  handler = async () =>
+    jsonResponse(404, {
+      code: "PGRST202",
+      message: "Could not find the function public.is_owner without parameters in the schema cache",
+    });
+
+  const err = await db.raw("/rpc/is_owner", { method: "POST" }).then(
+    () => assert.fail("should reject"),
+    (e) => e
+  );
+  assert.equal(err.schemaMissing, true);
+});
+
+test("an ordinary 404 is NOT treated as unprovisioned", async () => {
+  // Only PostgREST's schema-cache codes mean the migration is missing. A bare
+  // 404 must keep its normal error path rather than claiming the database is
+  // unbuilt.
+  reset();
+  localStorage.setItem(SESSION_KEY, JSON.stringify(futureSession()));
+  handler = async () => jsonResponse(404, { message: "nope" });
+
+  const err = await db.select("leads").then(
+    () => assert.fail("should reject"),
+    (e) => e
+  );
+  assert.notEqual(err.schemaMissing, true);
+});
+
 test("verify returns unauthenticated with no stored session, without a network call", async () => {
   reset();
   const result = await supaAuth.verify();
