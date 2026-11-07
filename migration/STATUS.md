@@ -1,7 +1,8 @@
 # GapVera zero-cost migration — status
 
-Task `t_129b1c12` (provision production Supabase + verify login; supersedes
-`t_46fd6cfc`, which superseded `t_961bc97c`).
+Task `t_396e5afe` (owner-only Google Places lookup via a Cloudflare Pages
+Function). Earlier: `t_129b1c12` (provision production Supabase), which
+superseded `t_46fd6cfc` and `t_961bc97c`.
 Assessed against `handoff/zero-cost/acceptance.md`.
 
 Status vocabulary is deliberate (acceptance criterion 14). **Implemented** means
@@ -10,7 +11,107 @@ code exists. **Tests passing** means automated tests cover it and pass.
 browser on this machine. **Provider-configured**, **deployed**, and
 **live-verified** mean exactly what they say.
 
+## 2026-11-07, task t_396e5afe — Places lookup built, deployed, one key left
+
+Erik authorized chargeable Google usage, so lead discovery is back. It is a
+**live lookup, not a scrape**: Google's terms forbid storing or extracting
+Places content, so results are display-only and the UI says so rather than
+offering a Save button that would breach the terms.
+
+### Two things were re-measured first, and both had changed
+
+| Probe | Previous status | Measured this session |
+|---|---|---|
+| Production Supabase | all tables 404 `PGRST205` (unprovisioned) | **provisioned** — `app_owner`/`leads`/`job_runs` return 401 `42501 permission denied` (anon refused at the privilege layer, which is the correct provisioned-and-locked response), `rpc/is_owner` 200 |
+| Erik's existing Maps key vs Places API (New) | unknown | **works** — HTTP 200, 5 results, narrow field mask honoured. No new GCP project or key needed. |
+
+So the provisioning blocker that dominated the previous three tasks is closed.
+Erik applied the SQL. The remaining gate is one Cloudflare variable (below).
+
+### What was built
+
+`functions/` — the first and only server-side code in the deployment:
+
+```
+functions/_lib/places.js        pure: field mask, query build, result shaping, caps
+functions/_lib/owner.js         owner auth + the usage ledger (no service_role key)
+functions/api/places/search.js  POST — the one billable request
+functions/api/places/usage.js   GET  — allowance, spends nothing
+functions/places.test.mjs       40 unit tests
+```
+
+**The key never reaches the browser.** It is read from `context.env` inside the
+Function at the edge. The shipped bundle was scanned, and so was the *live*
+bundle served from Cloudflare: no key value, no key-shaped literal, no direct
+`places.googleapis.com` reference, no `VITE_`-prefixed key name.
+
+**Cost is bounded three independent ways, all server-side** (a client that
+lies about its state cannot raise any of them):
+
+- one billable Text Search request per lookup — failures are never retried
+- 25/day and 300/month caps, checked before the request is made
+- a ledger slot is claimed in `job_runs` **before** Google is called, so a
+  crash mid-request cannot produce an uncounted charge
+
+The monthly cap of 300 sits well inside Google's 5,000 free Text Search Pro
+requests per month, so the normal state is no charge at all.
+
+**Everything fails closed.** Unreadable ledger, missing key, non-owner caller,
+non-integer count, unparseable Google response — each refuses the lookup
+rather than allowing it. There are no mock results anywhere in the path; the
+old local adapter's generated businesses are gone, which is what acceptance
+criterion 11 requires.
+
+**Google attribution ships with the results**: the "powered by Google" mark
+(the `on-non-white` variant, correct for GapVera's dark UI) and any per-result
+data-provider attributions. Results are deliberately kept off the Territory
+map, because that map is OpenStreetMap-based and the terms forbid showing
+Places content on a non-Google map.
+
+### Verification actually performed
+
+| Layer | Evidence |
+|---|---|
+| Unit | 152 tests pass (40 new). Four deliberate mutations — fail-open ledger, leaked coordinates, auth bypass, claim-after-spend — were each introduced and each caught, so the suite is not vacuous. |
+| Integration | 15 cases drive the **real handler modules** with injected fetches: 401/403/405/415 refusals, cap boundaries, ledger-claim-before-spend, and no-retry-on-failure. |
+| Live Google | One real billable request through the real handler: HTTP 200, 19 results, field mask honoured. |
+| Browser | The production-shaped bundle driven in a real browser against the real handlers. Verified: cost warning before any click, live allowance, results with attribution, no-website leads first, and all three refusal states (cap exhausted, no key, unauthenticated). Console clean. |
+| Bundle | `migration/test-harness/bundle-secret-scan.mjs` run against both the local build and the file actually served by Cloudflare. Both clean. The scanner's two detections were proven to fire against a planted key. |
+| Live | `https://gapvera.pages.dev` — deployment `71ee09ec` then the follow-up both `success`. Anonymous `POST /api/places/search` → 401, `GET /api/places/usage` → 401, `GET` on the POST route → 405, form-encoded POST → 415. SPA deep link `/scrape` → 200. |
+
+### Two defects were found by testing and fixed
+
+1. **The UI invited a click it could never satisfy.** With no key configured,
+   the page showed "23 of 25 lookups left" and an enabled button; the only way
+   to discover the feature was unavailable was to spend a click. `/usage` now
+   reports `configured: false` with no allowance numbers, and the UI disables
+   the control up front. Found in the browser pass, not by a unit test.
+2. **`/search` disclosed deployment configuration to anonymous callers.** The
+   key check ran before authentication, so an anonymous POST got 503
+   `google_key_missing` and could distinguish a configured deployment from an
+   unconfigured one. Found against the **live** deployment after the first
+   push. Auth now runs first; anonymous callers get 401 and learn nothing.
+
+Both have regression tests.
+
+### What Erik needs to do — one step
+
+Cloudflare → Pages → `gapvera` → Settings → Environment variables → Production.
+Add **`GOOGLE_MAPS_API_KEY`** = the key already in `server/.env`, mark it
+**encrypted**, then Deployments → Retry deployment.
+
+Until that is set, the lookup fails closed and the page says so plainly; CSV
+import and the rest of the CRM are unaffected. No other variable is needed —
+the Function reuses the existing `VITE_SUPABASE_*` values.
+
+Worth doing at the same time, in Google Cloud Console: restrict that key to
+the Places API and set a quota cap. GapVera's own caps bound normal use, but a
+key restriction is what bounds a leaked key, and only Erik can set it.
+
 ## 2026-11-07, task t_129b1c12 — provisioning prepared, apply still blocked
+
+> Superseded by the section above: the apply has since happened and the
+> production database is provisioned. Kept for the reasoning trail.
 
 **The production database is still unprovisioned, and this session could not
 provision it.** Re-measured at the start of this run, against the live project
@@ -366,7 +467,7 @@ Nothing was installed. `npm run build` is green and the bundle is 437 kB.
 | 8 | Logout, expiry, direct API/Storage calls fail closed | **Implemented + locally verified.** Four paths each returned 401: tampered token, no token, direct Storage sign with no token, and a token reused after logout. On reload with a revoked token the app shows "Your session expired", clears the stored session, and leaks no lead data into the DOM. |
 | 9 | Map renders with attribution, no exposed credential | **Fixed this session + locally verified.** CARTO was silently broken (see below); the map now uses OpenStreetMap with required attribution and no credential at all. |
 | 10 | Durable job records; retries don't duplicate mutations | **Implemented + locally verified (SQL).** The unique index on `(job, idempotency_key)` was exercised against real Postgres: a duplicate claim for the same period is rejected, a new period still claims. A cross-day duplicate-draft bug in the Edge Function was found and fixed (see below). Not deployed, so not live-verified. |
-| 11 | Scraping/SMTP visibly unavailable, no fake success | **Implemented + locally verified.** The Scrape page shows an UNAVAILABLE badge, explains why, and offers CSV import — no dead search box. The Outreach composer says "DRAFTS ONLY — SENDING IS UNAVAILABLE" and offers *Save draft* / *Copy for sending*. Verified in the database: saving a draft writes `status='draft'` and leaves `outreach_status` and `last_contact_date` untouched, so nothing claims a send that did not happen. Email discovery and site auditing are likewise marked unavailable rather than stubbed. |
+| 11 | Scraping/SMTP visibly unavailable, no fake success | **Updated 2026-11-07 (t_396e5afe): scraping is no longer "unavailable" — it is a real, live Google Places lookup.** Erik authorized the spend, so the Scrape page now performs an actual search, labelled COSTS MONEY with the live remaining allowance shown *before* the click. It is display-only: Google's terms forbid storing or extracting Places content, so there is no Save button and the page says why. Every failure mode refuses rather than fabricates — no key, cap reached, unreadable ledger, non-owner, bad Google response — and the old local adapter's generated mock businesses are deleted, not disabled. SMTP is unchanged: the Outreach composer says "DRAFTS ONLY — SENDING IS UNAVAILABLE" and offers *Save draft* / *Copy for sending*. Verified in the database: saving a draft writes `status='draft'` and leaves `outreach_status` and `last_contact_date` untouched, so nothing claims a send that did not happen. Email discovery and site auditing remain marked unavailable rather than stubbed. |
 | 12 | Hosted desktop + mobile dogfood passes | **Hosted shell verified; full pass still blocked.** The hosted site loads, fonts resolve, there is zero horizontal overflow at desktop width, and deep links resolve. But with no `VITE_SUPABASE_*` set the build fails closed at the configuration screen, so auth, CRM navigation, lead records, documents and the map cannot be exercised on the hosted product. All 9 routes passed this pass locally at desktop and 390 px with zero overflow. **Not closed.** |
 | 13 | Rollback/export artifact + documented restore rehearsal | **Done and rehearsed.** See below. Source SQLite is byte-identical after all of this session's work. |
 | 14 | Handoff distinguishes status levels | **This document.** |
