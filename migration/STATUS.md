@@ -1,6 +1,7 @@
 # GapVera zero-cost migration — status
 
-Task `t_46fd6cfc` (production `app_owner` login failure; supersedes `t_961bc97c`).
+Task `t_129b1c12` (provision production Supabase + verify login; supersedes
+`t_46fd6cfc`, which superseded `t_961bc97c`).
 Assessed against `handoff/zero-cost/acceptance.md`.
 
 Status vocabulary is deliberate (acceptance criterion 14). **Implemented** means
@@ -8,6 +9,124 @@ code exists. **Tests passing** means automated tests cover it and pass.
 **Locally verified** means it was executed against a real Postgres and a real
 browser on this machine. **Provider-configured**, **deployed**, and
 **live-verified** mean exactly what they say.
+
+## 2026-11-07, task t_129b1c12 — provisioning prepared, apply still blocked
+
+**The production database is still unprovisioned, and this session could not
+provision it.** Re-measured at the start of this run, against the live project
+using the publishable key extracted from the deployed bundle:
+
+| Probe | Result |
+|---|---|
+| `/rest/v1/{app_owner,leads,clients,calls,documents,invoices,email_templates,email_logs,job_runs}` | all 404 `PGRST205` |
+| `/rest/v1/rpc/is_owner` | 404 `PGRST202` |
+| `/auth/v1/health` | 200, GoTrue v2.197.0 — Auth healthy |
+| `https://gapvera.pages.dev` | 200, `cf-ray` present, bundle `index-jDw9CGWA.js` |
+
+Why the apply could not happen here, verified rather than assumed:
+
+- The Supabase SQL editor **is** open and authenticated in Erik's Chrome
+  (GapVera / `main` PRODUCTION, Free plan) — confirmed by screenshot.
+- Driving that window requires desktop input, which this unattended run is
+  not permitted to perform (`computer_use` click/type refused: approval
+  required, no user present).
+- The agent's own browser is a *separate* session and is signed out; it lands
+  on the Supabase sign-in page. The credential vault holds no Supabase item,
+  and a headless session cannot prompt for one.
+- No `supabase` CLI, no `psql`, no `wrangler` on the host; `~/.supabase`,
+  `~/.config/supabase`, `~/.netrc` all absent; no `SUPABASE_*`/`CLOUDFLARE_*`
+  environment variables.
+
+Asking for the password in chat is forbidden by the task and by the locked
+safety decisions, so the apply is Erik's to trigger. **What this session did
+instead was remove every remaining manual step except that one click.**
+
+### Provisioning is now a single paste
+
+Previously the runbook was six ordered editor pastes plus two dashboard
+object-creations, and a skipped or half-pasted step produces a project that
+looks migrated and 404s at first login — precisely the 2026-11-06 failure.
+Now:
+
+```sh
+node supabase/build-provision-sql.mjs      # -> migration/export/provision.sql
+```
+
+One file, pasted once, idempotent, self-verifying. Changes that made that
+possible:
+
+- **`supabase/migrations/0002_storage.sql`** now *creates* the `documents`
+  bucket private if it is absent, instead of requiring a prior dashboard
+  click. It still refuses outright if the bucket already exists and is public
+  — an existing bucket's visibility is never silently rewritten.
+- **`supabase/migrations/0004_grant_owner.sql`** (new) resolves Erik's account
+  from `auth.users` instead of requiring his email address to be typed into a
+  query and echoed in a result grid. It is the ownership step that was README
+  prose. It **refuses rather than guess**: zero accounts raises with what to
+  do, and more than one raises with the explicit by-uuid statement, because
+  picking "the first" would hand sole ownership of the CRM to an arbitrary
+  row. Re-running after the row exists is a no-op.
+- **`supabase/build-provision-sql.mjs`** (new) concatenates schema → storage →
+  ownership → data in the only order that works, and appends a final block
+  that raises unless all 9 RLS tables, `is_owner()`, exactly one `app_owner`
+  row, a private `documents` bucket with its 4 policies, and the lead rows are
+  all present. Output is gitignored — it embeds real CRM rows.
+
+RLS was **not** weakened by any of this: `app_owner` remains `SELECT`-only to
+`authenticated` with no grant to `anon`, and ownership is still reachable only
+through the privileged dashboard role.
+
+### Evidence (executed, not asserted)
+
+Against a **real PostgreSQL 15** container with the Supabase shim:
+
+- **Negative cases first.** `0004_grant_owner.sql` with 0 auth users → raised
+  *"no account exists in auth.users"*, `app_owner` left empty. With 2 auth
+  users → raised *"auth.users holds 2 accounts — cannot infer the owner"*,
+  `app_owner` still 0 rows. With exactly 1 → granted, then a re-run reported
+  *"Ownership already granted (1 row(s))"* and changed nothing.
+- **Storage guard both ways.** On a database with no bucket, `0002_storage.sql`
+  created it with `public = f` and installed 4 policies. Flipped to public, the
+  same file refused: *"bucket "documents" is PUBLIC"*.
+- **Single paste on a clean database.** `provision.sql` applied to a fresh
+  Postgres (shim + one auth user) and printed *"GapVera provisioned: 9 RLS
+  tables, is_owner() present, 1 owner, private documents bucket with 4
+  policies, 17 lead(s)."*
+- **Idempotent.** The same file run a second time: *"Ownership already
+  granted"*, same final notice, counts unchanged — `leads=17 owner=1
+  templates=4 buckets=1 storage_policies=4`.
+- **RLS intact afterwards.** All **17** assertions in `10-rls-assertions.sql`
+  pass against the fully-provisioned database, including *"authenticated
+  non-owner sees 0 leads (17 exist)"*, *"owner cannot grant ownership from the
+  app role"*, and *"search_path hijack does not grant access"*.
+- **Data reconciles.** `pg-readback.mjs` → `reconcile.mjs`: *"RECONCILED — 21
+  row(s) across 7 table(s) match the preserved SQLite export"*, `leads`
+  checksum `996314deac6df4fc` on both sides.
+- **Suite and build green.** `npm test` → 112 passing, 0 failing.
+  `npm run build` → clean.
+
+**No new Cloudflare deployment was triggered**, because no client code changed
+this pass — the deployed bundle `index-jDw9CGWA.js` is still the correct one.
+Triggering a build to produce a new hash would have been theatre.
+
+### What remains — one paste, by Erik
+
+In the already-open SQL editor (GapVera / `main` PRODUCTION):
+
+1. **Authentication → Users → Add user** (email + password) — if his account
+   does not exist yet. The SQL refuses rather than guess if it is missing.
+2. **Authentication → Providers → Email → "Enable sign ups" OFF.**
+3. **SQL editor → paste `migration/export/provision.sql` → Run.** Success
+   prints the "GapVera provisioned: …" notice above.
+
+Then login at https://gapvera.pages.dev reaches the Dashboard instead of the
+setup screen. No payment card, trial, upgrade, domain, or DNS change at any
+step.
+
+**Still not claimed:** the post-login authenticated state has never been
+exercised against the production database. It cannot be until the schema
+exists, and verifying it afterwards needs Erik's password, which this session
+must never request or handle.
 
 ## Production incident, 2026-11-06 — root cause and fix
 
